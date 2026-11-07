@@ -18,7 +18,8 @@ namespace neat;
 /// button, and under that a row of tabs, icon above label, like Arc's. The
 /// pages are built in code from the blocks in ui/block.cs, one file each:
 /// opts.gen.cs (General), opts.look.cs (Appearance), opts.pass.cs and
-/// opts.pass.task.cs (Passwords), opts.keys.cs (Shortcuts) and opts.about.cs (About).
+/// opts.pass.task.cs (Passwords), opts.ext.cs (Extensions), opts.keys.cs (Shortcuts) and
+/// opts.about.cs (About).
 ///
 /// Its colours come from the same window colour as the browser window
 /// (App.Look), through a Skin of its own, and follow it live.
@@ -32,14 +33,16 @@ public sealed partial class Opts : Window
     // The icon file copied next to neat.exe by neat.csproj (the same file as the exe's own icon).
     private const string Ico = "neat.ico";
 
-    // Tab name and its glyph. All five are in both Segoe Fluent Icons and Segoe MDL2 Assets
-    // (Windows 10 only has the second): Setting, Color, Lock, KeyboardClassic and Info.
-    // The Passwords page is the third one: PassAt in opts.pass.cs says so.
+    // Tab name and its glyph. All six are in both Segoe Fluent Icons and Segoe MDL2 Assets
+    // (Windows 10 only has the second): Setting, Color, Lock, Puzzle, KeyboardClassic and Info.
+    // The Passwords page is the third one: PassAt in opts.pass.cs says so. The Extensions page is
+    // the fourth: ExtAt in opts.ext.cs.
     private static readonly (string Name, string Glyph)[] Pages =
     {
         ("General", "\uE713"),
         ("Appearance", "\uE790"),
         ("Passwords", "\uE72E"),
+        ("Extensions", "\uEA86"),
         ("Shortcuts", "\uE765"),
         ("About", "\uE946"),
     };
@@ -185,6 +188,10 @@ public sealed partial class Opts : Window
         if (_at == PassAt)
             LeavePass();
 
+        // Leaving the Extensions page lets go of its controls.
+        if (_at == ExtAt)
+            LeaveExt();
+
         // The colour menu of the page being left stops following the colour.
         _pk?.Detach();
         _pk = null;
@@ -200,8 +207,9 @@ public sealed partial class Opts : Window
             0 => BuildGen(),
             1 => BuildLook(),
             2 => BuildPass(),
-            3 => BuildKeys(),
-            4 => BuildAbout(),
+            3 => BuildExt(),
+            4 => BuildKeys(),
+            5 => BuildAbout(),
             _ => Block.Page(),
         };
         Fit();

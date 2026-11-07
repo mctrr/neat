@@ -77,6 +77,12 @@ public static class Ext
     /// <summary>Why <see cref="Can"/> is false, as a sentence for the UI; empty when it is true.</summary>
     public static string Why { get; private set; } = "Extensions are not ready yet.";
 
+    /// <summary>
+    /// True when extensions are on and a tab is alive to ask. Only then does <see cref="All"/> say
+    /// anything: an empty list before that does not mean there are no extensions.
+    /// </summary>
+    public static bool Live => Can && Prof() is not null;
+
     /// <summary>Gives the profile of a live tab, or null when none exists yet. Set by the window.</summary>
     internal static Func<IExtProf?>? Src { get; set; }
 

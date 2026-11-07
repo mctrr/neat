@@ -50,6 +50,8 @@ src/neat/
   web/env.cs        app folders; points WebView2 at the bundled runtime; the one shared WebView2 environment (extensions on)
   web/ext.cs        browser extensions: availability, and list/add/enable/remove as plain data
   web/extprof.cs    the real profile behind ext.cs (the only place that touches WebView2 extension objects)
+  web/extmeta.cs    reads an extension's manifest.json: name, version, and what it may do in plain words
+  web/extstore.cs   NEAT's own copies of the extensions (Extensions in the data folder) and the id-to-folder list
   web/tab.cs        one tab: its web view, title, address and favicon
   look/look.cs      window colour: turns the saved tint into the window gradient
   look/win.paint.cs colour menu: dark/light, gradient and opacity sliders, swatches
@@ -103,6 +105,7 @@ src/neat/
   pass/clip.cs      SecretClip: copy a password, not in clipboard history or cloud, cleared after 30 seconds
   opts.pass.cs      Settings > Passwords: protection, saved logins, show / copy / delete
   opts.pass.task.cs the cards that page opens: add a login, set or change the NEAT password, confirm a delete
+  opts.ext.cs       Settings > Extensions: the installed extensions (switch, remove) and adding one from a folder
   ads/ads.cs        the ad blocker (App.Ads): loads the engine in the background, judges requests, popups and pages
   ads/engine.cs     one loaded filter release behind neat_adblock.dll's C functions (thread-safe, frees itself)
   ads/native.cs     the C functions of neat_adblock.dll (P/Invoke)
@@ -123,7 +126,7 @@ tools/fetch-ads.ps1 downloads neat_adblock.dll and the filter lists into ads-dl\
 tests/ads.check/    the blocker's self-checks: C# pieces (dotnet run) and the page script (node page.check.mjs)
 tests/fp.check/     the fingerprint protection's self-checks: C# pieces (dotnet run) and the page script in a real Chromium (node farble.check.mjs, needs Playwright)
 tests/vault.check/  the vault's self-check (plain asserts, no packages), run by CI before the build
-tests/ext.check/    the extension wrappers' self-check against a fake profile (plain asserts, no packages), run by CI before the build
+tests/ext.check/    self-check of the extension wrappers (against a fake profile), the manifest reader and the folder store (plain asserts, no packages), run by CI before the build
 tests/capture.check/ the page scripts' self-check: made-up login forms in jsdom (needs Node; npm ci, npm test)
 ```
 

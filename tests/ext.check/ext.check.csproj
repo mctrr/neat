@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The self-check of the extension wrappers (src/neat/web/ext.cs). The wrappers talk to a
+  <!-- The self-check of the extension code that does not need WebView2: the wrappers
+       (src/neat/web/ext.cs), the manifest reader (extmeta.cs) and the folder store (extstore.cs).
+       The wrappers talk to a
        profile only through a small interface, so they compile and run here without WebView2 or
        WinUI, against a fake profile; the real one (web/extprof.cs) is a few lines of glue and is
        not part of this check. CI runs it before the app is built (see .github/workflows/build.yml).
@@ -18,6 +20,8 @@
 
   <ItemGroup>
     <Compile Include="..\..\src\neat\web\ext.cs" LinkBase="web" />
+    <Compile Include="..\..\src\neat\web\extmeta.cs" LinkBase="web" />
+    <Compile Include="..\..\src\neat\web\extstore.cs" LinkBase="web" />
   </ItemGroup>
 
 </Project>
