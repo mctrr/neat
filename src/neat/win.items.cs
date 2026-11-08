@@ -94,6 +94,10 @@ public sealed partial class Win
         try
         {
             answer = await RunIn(core, via, FormScript.For(origin, kind, fields, above));
+
+            // A card form split over frames: the rest of the form is in the frames next to this one.
+            if (via is not null && above is not null && kind == ItemKind.Card)
+                await FillSiblings(tab, via, kind, fields, above);
         }
         catch (Exception ex)
         {
@@ -144,16 +148,26 @@ public sealed partial class Win
         if (!_cardCapture.Holds(tab))
             return;
 
+        // A card typed in frames: a number field may still be in one of them, which the page's own check cannot see.
         string answer;
         try
         {
-            answer = await RunHeld(_cardFrame, tab, core, CaptureScript.HasCard);
+            if (_cardFrame.TryGetValue(tab, out var held))
+            {
+                var at = _frames.Find(f => f.Frame == held)?.Origin ?? _cardOrigin.GetValueOrDefault(tab);
+                answer = await CardFieldShows(tab, core, at) ? "true" : "false";
+            }
+            else
+            {
+                answer = await core.ExecuteScriptAsync(CaptureScript.HasCard);
+            }
         }
         catch (Exception)
         {
             // The tab was closed or moved on again.
             _cardCapture.Drop(tab);
             _cardFrame.Remove(tab);
+            _cardOrigin.Remove(tab);
             return;
         }
 
@@ -163,13 +177,41 @@ public sealed partial class Win
         {
             _cardCapture.Drop(tab);
             _cardFrame.Remove(tab);
+            _cardOrigin.Remove(tab);
         }
+    }
+
+    // The address of the frame that held the number of the card put together for a tab, kept for when that frame is gone.
+    private readonly Dictionary<Tab, string> _cardOrigin = new();
+
+    /// <summary>
+    /// A button was pressed in a page above frames that hold card fields. What the frames said is made the held card, as
+    /// if the form had been in the page; the offer is made when the frames have gone away (<see cref="AfterCard"/>).
+    /// </summary>
+    private async Task SubmitParts(Tab tab, string top, string holder)
+    {
+        // The frame that holds the last field posts what is in it when it loses the focus, which a press in the page
+        // above causes; its message may come a moment after the press.
+        await Task.Delay(300);
+
+        if (Never.Has(App.Cfg.Cur.NeverSave, top) || !_cardCapture.Submit(tab, top, holder, out var numberFrame))
+            return;
+
+        var frame = numberFrame as Microsoft.Web.WebView2.Core.CoreWebView2Frame;
+        SetFrame(_cardFrame, tab, frame);
+
+        var origin = frame is null ? null : _frames.Find(f => f.Frame == frame)?.Origin;
+        if (origin is null)
+            _cardOrigin.Remove(tab);
+        else
+            _cardOrigin[tab] = origin;
     }
 
     private async Task OfferCard(Tab tab)
     {
         var held = _cardCapture.Take(tab);
         _cardFrame.Remove(tab);
+        _cardOrigin.Remove(tab);
 
         // The person has gone to another tab, or does not want offers here.
         if (held is null || tab != _cur || Never.Has(App.Cfg.Cur.NeverSave, held.Site))

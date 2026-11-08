@@ -224,6 +224,23 @@ public sealed partial class Win
 
                 break;
 
+            case "cardpart":
+                // What one frame of a payment form has typed in it; put together with the others (vault/cardcapture.cs).
+                if (frame is not null && !Never.Has(App.Cfg.Cur.NeverSave, top))
+                    _cardCapture.Part(tab, frame, JsonText(root, "n"), JsonText(root, "h"), JsonText(root, "e"), JsonText(root, "c"));
+
+                break;
+
+            case "cardsubmit":
+                // A button was pressed in the page above frames that hold card fields: that may have been Pay.
+                if (frame is null)
+                {
+                    var holder = JsonText(root, "h") ?? string.Empty;
+                    _ = Guard(() => SubmitParts(tab, top, holder), "putting a card together");
+                }
+
+                break;
+
             case "cardgone":
                 // The card number field went away without a new page (said by whoever reported the card).
                 if (_cardCapture.Holds(tab) && SameFrame(_cardFrame, tab, frame))
@@ -568,6 +585,7 @@ public sealed partial class Win
         _cardCapture.Clear();
         _loginFrame.Clear();
         _cardFrame.Clear();
+        _cardOrigin.Clear();
     }
 
     private static async Task Guard(Func<Task> work, string what)

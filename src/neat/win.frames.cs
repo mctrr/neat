@@ -28,8 +28,16 @@ namespace neat;
 ///     page the frame is in. The scripts check from inside the frame that it still has that address and that
 ///     its parent is the page the window saw (location.ancestorOrigins); a frame that cannot tell gets nothing.
 ///
-/// Not covered: a payment form that puts each field in a frame of its own (one frame cannot see the others,
-/// and a Pay button outside them reports nothing), and frames inside frames.
+/// A payment form that puts each field in a frame of its own (a card processor does: the number, the expiry and
+/// the security code each in one, with the Pay button in the page above):
+///   - Each frame says what is typed in it (cardpart), only to the window; the window puts the parts together
+///     (<see cref="CardCapture.Part"/>), and the press of a button in the page above (cardsubmit) makes that the
+///     held card, which is then handled as a card typed in the page: offered when the form has gone away.
+///     The form has gone away when no frame of the address that held the number still shows a card number.
+///   - Picking a saved card at a field of one of these frames fills the card into the frame and into the other
+///     frames of the same address (never a frame of another address), so one pick fills the whole form.
+///
+/// Not covered: frames inside frames.
 /// </summary>
 public sealed partial class Win
 {
@@ -62,6 +70,25 @@ public sealed partial class Win
     // The box of a frame's field in the top page's pixels, as the top page told it (null: no field).
     private sealed record FrameRect(string Fid, double[]? Box, double Width);
 
+    // The frames of every tab (the first level), and the address each has said it has.
+    private sealed class FrameInfo
+    {
+        public FrameInfo(Tab tab, CoreWebView2Frame frame)
+        {
+            Tab = tab;
+            Frame = frame;
+        }
+
+        public Tab Tab { get; }
+        public CoreWebView2Frame Frame { get; }
+        public string? Origin { get; set; }
+    }
+
+    private readonly List<FrameInfo> _frames = new();
+
+    // The most frames asked about their address, or filled, at once.
+    private const int FrameLimit = 16;
+
     private FrameKey? _fk;
     private FrameRect? _fr;
 
@@ -80,6 +107,8 @@ public sealed partial class Win
     {
         try
         {
+            _frames.Add(new FrameInfo(tab, frame));
+
             frame.WebMessageReceived += (s, e) => OnFrameMessage(tab, frame, e);
 
             frame.NavigationCompleted += (s, e) =>
@@ -90,11 +119,18 @@ public sealed partial class Win
 
             frame.Destroyed += (s, e) =>
             {
+                _frames.RemoveAll(f => f.Frame == frame);
+
                 if (_fk?.Frame == frame)
                     _fk = null;
 
                 if (_fieldFrame == frame)
                     HideField();
+
+                // The frame that held the number of a card is gone: the form may have gone with it.
+                var core = tab.View.CoreWebView2;
+                if (core is not null && _cardCapture.Holds(tab) && SameFrame(_cardFrame, tab, frame))
+                    _ = Guard(() => AfterCard(tab, core), "after a card");
             };
         }
         catch (Exception ex)
@@ -131,6 +167,11 @@ public sealed partial class Win
             var origin = Origin.Of(e.Source);
             if (core is null || origin is null || Origin.Of(core.Source) is null)
                 return;
+
+            // The address the frame says it has, for finding its siblings later.
+            var seen = _frames.Find(f => f.Frame == frame);
+            if (seen is not null)
+                seen.Origin = origin;
 
             Dispatch(tab, origin, frame, text, head);
         }
@@ -191,6 +232,97 @@ public sealed partial class Win
         return map.TryGetValue(tab, out var frame) && !Dead(frame)
             ? frame.ExecuteScriptAsync(script)
             : core.ExecuteScriptAsync(script);
+    }
+
+    // ---- the other frames of a payment form ----
+
+    /// <summary>The address a frame has, asked of the frame itself when it has not said (null when it cannot tell yet).</summary>
+    private async Task<string?> OriginOf(FrameInfo seen)
+    {
+        if (seen.Origin is not null)
+            return seen.Origin;
+
+        try
+        {
+            if (Dead(seen.Frame))
+                return null;
+
+            var said = (await seen.Frame.ExecuteScriptAsync("location.origin")).Trim('"');
+            seen.Origin = Origin.Of(said);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        return seen.Origin;
+    }
+
+    /// <summary>The other live frames of the tab that have the address <paramref name="origin"/>, as many as <see cref="FrameLimit"/>.</summary>
+    private async Task<List<FrameInfo>> FramesAt(Tab tab, CoreWebView2Frame? except, string origin)
+    {
+        var found = new List<FrameInfo>();
+
+        foreach (var seen in _frames.Where(f => f.Tab == tab && f.Frame != except).Take(FrameLimit).ToList())
+        {
+            if (await OriginOf(seen) == origin && !Dead(seen.Frame))
+                found.Add(seen);
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// A card picked in one frame of a payment form is filled into the other frames of the same address too (never a
+    /// frame of another address: a page's own frames cannot get a card this way). What each answers is of no
+    /// interest: a frame that has no field of the card has nothing to fill.
+    /// </summary>
+    private async Task FillSiblings(Tab tab, Via via, string kind, IReadOnlyDictionary<string, string> fields, string above)
+    {
+        foreach (var seen in await FramesAt(tab, via.Frame, via.Origin))
+        {
+            try
+            {
+                await seen.Frame.ExecuteScriptAsync(FormScript.For(via.Origin, kind, fields, above));
+            }
+            catch (Exception ex)
+            {
+                Log.Write("pass", "filling a frame of the form failed (" + ex.GetType().Name + ")");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether a card number field is still on show after a card was typed into frames: in the page, or in a frame of the
+    /// address that held the number. A frame that cannot be asked is passed over.
+    /// </summary>
+    private async Task<bool> CardFieldShows(Tab tab, CoreWebView2 core, string? origin)
+    {
+        if (await core.ExecuteScriptAsync(CaptureScript.HasCard) != "false")
+            return true;
+
+        if (origin is null)
+            return false;
+
+        foreach (var seen in _frames.Where(f => f.Tab == tab).Take(FrameLimit).ToList())
+        {
+            // A frame with no address of its own (about:blank, one not loaded yet) is not part of a payment form.
+            var at = await OriginOf(seen);
+            if (at is null || at != origin || Dead(seen.Frame))
+                continue;
+
+            try
+            {
+                if (await seen.Frame.ExecuteScriptAsync(CaptureScript.HasCard) != "false")
+                    return true;
+            }
+            catch (Exception)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ---- the key at a field of a frame ----

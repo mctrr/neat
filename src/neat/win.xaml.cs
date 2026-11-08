@@ -294,6 +294,7 @@ public sealed partial class Win : Window
         _cardCapture.Forget(tab);
         _loginFrame.Remove(tab);
         _cardFrame.Remove(tab);
+        _cardOrigin.Remove(tab);
 
         host.Children.Remove(tab.View);
         _tabs.RemoveAt(i);

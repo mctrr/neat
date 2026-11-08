@@ -20,7 +20,24 @@ public sealed class CardCapture
     /// <summary>After offering to save a card for a site, it is not offered again for this long.</summary>
     public static readonly TimeSpan Cooldown = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// How long what the frames of a payment form have said (the number in one, the expiry in another, ...)
+    /// is kept while waiting for the Pay button of the page above them.
+    /// </summary>
+    public static readonly TimeSpan PartsWindow = TimeSpan.FromMinutes(10);
+
+    private sealed class Parts
+    {
+        public string Number = string.Empty;
+        public string Holder = string.Empty;
+        public string Expiry = string.Empty;
+        public string Cvc = string.Empty;
+        public object? NumberFrame;
+        public DateTime At;
+    }
+
     private readonly Dictionary<object, PendingCard> _held = new();
+    private readonly Dictionary<object, Parts> _parts = new();
     private readonly Dictionary<string, DateTime> _offered = new(StringComparer.Ordinal);
 
     // The clock this (and the self-check) uses.
@@ -47,6 +64,64 @@ public sealed class CardCapture
             cvc = string.Empty;
 
         _held[tab] = new PendingCard(origin, digits, holder, ItemRules.Expiry(expiry) ?? string.Empty, cvc, Clock());
+        return true;
+    }
+
+    /// <summary>
+    /// A payment form whose fields are in frames of their own (a card processor puts the number, the expiry and the
+    /// security code each in a frame, and the Pay button is in the page above): each frame says what is typed in it,
+    /// and what has been said is put together for the tab until <see cref="Submit"/>. Only a number that passes the
+    /// check digit is taken; a value that is not valid is left out. A new number starts over (its expiry and code
+    /// are not the old card's). Nothing is written, and nothing is held longer than <see cref="PartsWindow"/>.
+    /// </summary>
+    public void Part(object tab, object frame, string? number, string? holder, string? expiry, string? cvc)
+    {
+        var now = Clock();
+
+        if (!_parts.TryGetValue(tab, out var p) || now - p.At >= PartsWindow)
+            _parts[tab] = p = new Parts();
+
+        p.At = now;
+
+        var digits = ItemRules.Digits(number);
+        if (number is not null && ItemRules.Luhn(digits) && digits.Length == number.Count(char.IsAsciiDigit))
+        {
+            if (p.Number.Length > 0 && p.Number != digits)
+            {
+                p.Expiry = string.Empty;
+                p.Cvc = string.Empty;
+            }
+
+            p.Number = digits;
+            p.NumberFrame = frame;
+        }
+
+        if (holder is not null && holder.Trim().Length is > 0 and <= 100)
+            p.Holder = holder.Trim();
+
+        if (ItemRules.Expiry(expiry) is { } e)
+            p.Expiry = e;
+
+        if (cvc is not null && cvc.Length is >= 3 and <= 4 && cvc.All(char.IsAsciiDigit))
+            p.Cvc = cvc;
+    }
+
+    /// <summary>
+    /// The page above the frames had its button pressed: what the frames said becomes the held card (as if the form
+    /// had been in the page), with <paramref name="holder"/> as the name if no frame gave one. False when no
+    /// frame gave a number, or it is too old. <paramref name="numberFrame"/> is the frame the number came from.
+    /// </summary>
+    public bool Submit(object tab, string site, string holder, out object? numberFrame)
+    {
+        numberFrame = null;
+
+        if (!_parts.Remove(tab, out var p) || Clock() - p.At >= PartsWindow || p.Number.Length == 0)
+            return false;
+
+        if (!Hold(tab, site, p.Number, p.Holder.Length > 0 ? p.Holder : holder, p.Expiry, p.Cvc))
+            return false;
+
+        numberFrame = p.NumberFrame;
         return true;
     }
 
@@ -79,11 +154,13 @@ public sealed class CardCapture
     public void Forget(object tab)
     {
         _held.Remove(tab);
+        _parts.Remove(tab);
     }
 
     public void Clear()
     {
         _held.Clear();
+        _parts.Clear();
     }
 
     /// <summary>Whether an offer for this site may be shown now, and if so notes that it was.</summary>

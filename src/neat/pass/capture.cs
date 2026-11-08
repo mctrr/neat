@@ -542,6 +542,7 @@ internal static class CaptureScript
           // frame's name (fid): a page that forges these can only move a key, because what is listed and filled
           // is decided from the address the frame itself reported, and goes only into that frame.
 
+          let cardFrames = false;   // a frame said it holds card fields: a press in this page may be its Pay button
           let fr = null;        // { fid, src, r }: the field of a frame that has the focus
           let frSaid = '';
           let frPoll = null;
@@ -601,7 +602,13 @@ internal static class CaptureScript
             window.addEventListener('message', e => {
               try {
                 const d = e.data;
-                if (!d || typeof d !== 'object' || d.neat !== TOKEN || typeof d.fid !== 'string' || d.fid.length === 0 || d.fid.length > 80) return;
+                if (!d || typeof d !== 'object') return;
+                if (d.neatcard === TOKEN) {
+                  // Says only that: no number, no field. A page may forge it, and then a press of a button makes the window look.
+                  if (e.source && e.source !== window && frameOf(e.source)) cardFrames = true;
+                  return;
+                }
+                if (d.neat !== TOKEN || typeof d.fid !== 'string' || d.fid.length === 0 || d.fid.length > 80) return;
                 if (!e.source || e.source === window) return;
                 if (d.r === null) {
                   if (fr && fr.fid === d.fid && fr.src === e.source) dropFrame();
@@ -726,7 +733,12 @@ internal static class CaptureScript
               const role = cardRole(el);
               if (role && !by[role]) by[role] = el;
             }
-            if (!by.number) return;
+            if (!by.number) {
+              // A payment form whose number is in a frame: this press may be its Pay button. The window has what
+              // the frames said; only the name, if it is in this page, is added here.
+              if (!inFrame && cardFrames) post({ t: 'cardsubmit', h: by.holder ? by.holder.value.trim().slice(0, 100) : '' });
+              return;
+            }
             const raw = by.number.value.trim();
             const digits = raw.replace(/[ -]/g, '');
             if (!/^\d{12,19}$/.test(digits) || !luhn(digits)) return;
@@ -748,6 +760,40 @@ internal static class CaptureScript
               else if (ticks >= 20) clearInterval(t);
             }, 400);
           };
+
+          // A frame that holds card fields says what is typed in it, to the window only (and tells the page above that
+          // it holds some, which carries nothing else). The Pay button is usually in the page above: its press
+          // then makes the window put the parts together (cardsubmit, above). Real events only, as everywhere.
+          if (inFrame) {
+            let sentPart = '';
+            const sayPart = e => {
+              if (!e.isTrusted) return;
+              const by = {};
+              for (const el of inputs(document).concat(Array.from(document.querySelectorAll('select')))) {
+                if (el.tagName === 'INPUT' && isPw(el)) continue;
+                if (!visible(el) || !String(el.value).trim()) continue;
+                const role = cardRole(el);
+                if (role && !by[role]) by[role] = el;
+              }
+              const o = { t: 'cardpart' };
+              if (by.number) {
+                const digits = by.number.value.replace(/[ -]/g, '');
+                if (/^\d{12,19}$/.test(digits) && luhn(digits)) o.n = digits;
+              }
+              if (by.holder) o.h = by.holder.value.trim().slice(0, 100);
+              if (by.expiry) o.e = by.expiry.value.trim().slice(0, 12);
+              else if (by.month && by.year) o.e = (by.month.value.trim() + '/' + by.year.value.trim()).slice(0, 12);
+              if (by.cvc) o.c = by.cvc.value.trim().slice(0, 4);
+              if (!o.n && !o.h && !o.e && !o.c) return;
+              const sig = JSON.stringify(o);
+              if (sig === sentPart) return;
+              sentPart = sig;
+              post(o);
+              try { window.parent.postMessage({ neatcard: TOKEN }, '*'); } catch (err) {}
+            };
+            document.addEventListener('change', sayPart, true);
+            document.addEventListener('focusout', sayPart, true);
+          }
 
           document.addEventListener('click', e => {
             if (!e.isTrusted) return;

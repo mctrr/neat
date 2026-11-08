@@ -76,6 +76,10 @@ function top(html = '<iframe id="f"></iframe><input id="own" type="text" name="u
     live: () => timers.filter(t => t.on).length,
     // What the frame's page posted to its parent arrives here, from the frame's window.
     arrive: (data, source) => win.dispatchEvent(new win.MessageEvent('message', { data, source: source === undefined ? win.document.getElementById('f').contentWindow : source })),
+    click: sel => {
+      state.real = true;
+      try { win.document.querySelector(sel).dispatchEvent(new win.MouseEvent('click', { bubbles: true, composed: true })); } finally { state.real = false; }
+    },
     press: sel => {
       state.real = true;
       try { win.document.querySelector(sel).dispatchEvent(new win.Event('pointerdown', { bubbles: true, composed: true })); } finally { state.real = false; }
@@ -133,6 +137,10 @@ function inFrame(html, opts = {}) {
     click: el => {
       state.real = true;
       try { el.click(); } finally { state.real = false; }
+    },
+    blur: el => {
+      state.real = true;
+      try { el.dispatchEvent(new b.FocusEvent('focusout', { bubbles: true, composed: true })); } finally { state.real = false; }
     },
     // The fill scripts: run as the window runs them, with the data as one object.
     fill: (src, data) => run('return (' + src + ')(' + JSON.stringify(data) + ');'),
@@ -292,6 +300,69 @@ check('the top page does not take a message of a second frame for the first one\
   t.arrive(Object.assign({}, FIELD, { fid: 'second' }), t.win.document.getElementById('g').contentWindow);
   const got = t.got();
   expect(got.length === 3 && got[1].t === 'frect' && got[1].fid === 'abc123' && got[1].r === null && got[2].fid === 'second' && got[2].r[0] === 420, JSON.stringify(got));
+});
+
+// ---- a payment form whose fields are in frames of their own ----
+
+const CARDS = (id, ac) => '<input id="' + id + '" type="text" autocomplete="' + ac + '" name="' + id + '">';
+
+check('a frame says what is typed in it (number, expiry, code) to the window only, and tells the parent only that it holds card fields', () => {
+  const f = inFrame(CARDS('n', 'cc-number') + CARDS('e', 'cc-exp') + CARDS('c', 'cc-csc'), { url: 'https://js.pay.example/card' });
+  f.run(capture());
+  f.$('#n').value = '4111 1111 1111 1111';
+  f.$('#e').value = '08/27';
+  f.$('#c').value = '123';
+  f.blur(f.$('#c'));
+  const parts = f.got().filter(m => m.t === 'cardpart');
+  expect(parts.length === 1 && parts[0].n === '4111111111111111' && parts[0].e === '08/27' && parts[0].c === '123' && parts[0].fr === 1, JSON.stringify(parts));
+  expect(f.toParent.length === 1 && JSON.stringify(f.toParent[0].m) === JSON.stringify({ neatcard: TOKEN }), 'parent: ' + JSON.stringify(f.toParent));
+  f.blur(f.$('#c'));
+  expect(f.got().filter(m => m.t === 'cardpart').length === 1, 'said the same thing twice');
+});
+
+check('a frame with one field says that one, and a number that fails the check digit is not said', () => {
+  const f = inFrame(CARDS('e', 'cc-exp'), { url: 'https://js.pay.example/exp' });
+  f.run(capture());
+  f.$('#e').value = '08/27';
+  f.blur(f.$('#e'));
+  const parts = f.got().filter(m => m.t === 'cardpart');
+  expect(parts.length === 1 && parts[0].e === '08/27' && !('n' in parts[0]), JSON.stringify(parts));
+
+  const g = inFrame(CARDS('n', 'cc-number'), { url: 'https://js.pay.example/num' });
+  g.run(capture());
+  g.$('#n').value = '4111 1111 1111 1112';
+  g.blur(g.$('#n'));
+  expect(g.got().filter(m => m.t === 'cardpart').length === 0, 'a number that is not a card number was said');
+});
+
+check('a made-up blur says nothing', () => {
+  const f = inFrame(CARDS('n', 'cc-number'));
+  f.run(capture());
+  f.$('#n').value = '4111 1111 1111 1111';
+  f.$('#n').dispatchEvent(new f.b.FocusEvent('focusout', { bubbles: true }));
+  expect(f.got().length === 0 && f.toParent.length === 0, 'it said ' + JSON.stringify(f.got()));
+});
+
+check('a press in the top page says cardsubmit only after a frame said it holds card fields', () => {
+  const t = top('<iframe id="f"></iframe><input id="holder" autocomplete="cc-name" value="An Nguyen"><button id="pay" type="button">Pay</button>');
+  t.press('#pay');
+  expect(t.got().length === 0, 'it said it before any frame did: ' + JSON.stringify(t.got()));
+  t.arrive({ neatcard: TOKEN });
+  t.click('#pay');
+  const got = t.got().filter(m => m.t === 'cardsubmit');
+  expect(got.length === 1 && got[0].h === 'An Nguyen' && !('fr' in got[0]), JSON.stringify(t.got()));
+});
+
+check('the top page ignores the card sign from something that is not its frame, and a press it made up', () => {
+  const t = top('<iframe id="f"></iframe><button id="pay" type="button">Pay</button>');
+  t.arrive({ neatcard: TOKEN }, t.win);
+  t.arrive({ neatcard: 'other' });
+  t.arrive({ neatcard: TOKEN }, new JSDOM('<p>').window);
+  t.click('#pay');
+  expect(t.got().length === 0, 'it said ' + JSON.stringify(t.got()));
+  t.arrive({ neatcard: TOKEN });
+  t.win.document.getElementById('pay').dispatchEvent(new t.win.MouseEvent('click', { bubbles: true }));
+  expect(t.got().length === 0, 'a made-up press said ' + JSON.stringify(t.got()));
 });
 
 // ---- the fill scripts, run in a frame ----

@@ -83,6 +83,7 @@ internal static class Program
         Run("cards and identities are sealed, can be changed, and survive a change of protection", SavedItems);
         Run("the file is version 2 only while it holds what an older NEAT would lose", FileVersion);
         Run("a card number is checked, and a held card is offered only once it is known to have gone through", CardHeld);
+        Run("a card typed in separate frames is put together when the page above is submitted", CardParts);
         Run("a site can be taken off the never list", NeverRemove);
         Run("the vault code never logs", NoLogging);
         Run("the real number of PBKDF2 rounds works", RealRounds);
@@ -1308,6 +1309,67 @@ internal static class Program
         var future = TempFile();
         File.WriteAllText(future, "{ \"Version\": 3, \"Mode\": \"dpapi\", \"Key\": \"AAAA\", \"Logins\": [] }");
         Expect(NewVault(future).Open() == OpenResult.TooNew, "a version this code does not know is still reported");
+    }
+
+    private static void CardParts()
+    {
+        var now = DateTime.UtcNow;
+        var cards = new CardCapture { Clock = () => now };
+        var tab = new object();
+        var numberFrame = new object();
+        var expiryFrame = new object();
+        var codeFrame = new object();
+
+        // Nothing said: nothing to put together.
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _) && !cards.Holds(tab), "nothing said, nothing held");
+
+        // Each frame says its own: the number, the expiry, the code; in any order, and a part twice.
+        cards.Part(tab, expiryFrame, null, null, "8/2027", null);
+        cards.Part(tab, numberFrame, "4111111111111111", null, null, null);
+        cards.Part(tab, codeFrame, null, null, null, "123");
+        cards.Part(tab, codeFrame, null, null, null, "123");
+        Expect(cards.Submit(tab, "https://Shop.example/pay", "A Nguyen", out var from), "the parts become a held card");
+        Expect(ReferenceEquals(from, numberFrame), "and the frame the number came from is known");
+
+        var held = cards.Take(tab) ?? throw new Exception("nothing taken");
+        Expect(held.Site == "https://shop.example" && held.Number == "4111111111111111" && held.Expiry == "08/27" && held.Cvc == "123", "number, expiry and code from three frames");
+        Expect(held.Holder == "A Nguyen", "the name of the page above is used when no frame gave one");
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _), "put together once: the parts are used up");
+
+        // A frame's name wins over the page's; a bad value is left out, not refused.
+        cards.Part(tab, numberFrame, "4111111111111111", "Frame Name", "99/99", "12");
+        Expect(cards.Submit(tab, "https://shop.example", "Page Name", out _), "held");
+        held = cards.Take(tab)!;
+        Expect(held.Holder == "Frame Name" && held.Expiry == string.Empty && held.Cvc == string.Empty, "the frame's name, a bad expiry and code left out");
+
+        // A number that fails the check digit is never taken, so there is no card without one.
+        cards.Part(tab, numberFrame, "4111111111111112", null, "08/27", "123");
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _), "no valid number, no card");
+
+        // A different number starts the card over: its expiry and code are not the old card's.
+        cards.Part(tab, numberFrame, "4111111111111111", null, "08/27", "123");
+        cards.Part(tab, numberFrame, "5555555555554444", null, null, null);
+        Expect(cards.Submit(tab, "https://shop.example", string.Empty, out _), "held");
+        held = cards.Take(tab)!;
+        Expect(held.Number == "5555555555554444" && held.Expiry == string.Empty && held.Cvc == string.Empty, "the new card has nothing of the old one");
+
+        // Parts of one tab are not another's, they go stale, and a closed tab or Clear forgets them.
+        var other = new object();
+        cards.Part(tab, numberFrame, "4111111111111111", null, null, null);
+        Expect(!cards.Submit(other, "https://shop.example", string.Empty, out _), "another tab has none");
+        now = now.Add(CardCapture.PartsWindow).AddSeconds(1);
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _), "parts that waited too long are gone");
+
+        cards.Part(tab, numberFrame, "4111111111111111", null, null, null);
+        cards.Forget(tab);
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _), "a closed tab forgets them");
+        cards.Part(tab, numberFrame, "4111111111111111", null, null, null);
+        cards.Clear();
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _), "Clear forgets them");
+
+        // Not a web page: nothing held.
+        cards.Part(tab, numberFrame, "4111111111111111", null, null, null);
+        Expect(!cards.Submit(tab, "about:blank", string.Empty, out _) && !cards.Holds(tab), "a page that is not a web page gets nothing");
     }
 
     private static void CardHeld()
