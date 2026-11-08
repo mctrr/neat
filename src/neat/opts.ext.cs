@@ -5,9 +5,10 @@ namespace neat;
 
 /// <summary>
 /// The Extensions page: the extensions that are installed, each with a switch and a remove button,
-/// and a way to add one from a folder. What is installed and what it may do come from web/ext.cs
-/// (the profile) and web/extmeta.cs (the manifest); where the copies live is web/extstore.cs.
-/// This file only draws them and passes on what the person does.
+/// and a way to add one from a folder or from a .crx or .zip file. What is installed and what it
+/// may do come from web/ext.cs (the profile) and web/extmeta.cs (the manifest); where the copies
+/// live is web/extstore.cs, and the unpacking of a package is web/extpack.cs. This file only draws
+/// them and passes on what the person does.
 ///
 /// It keeps the rules of the Passwords page (opts.pass.cs): every handler goes through Safe, slow
 /// work runs on a pool thread, and after every wait the page checks it is still on show before it
@@ -19,12 +20,21 @@ public sealed partial class Opts
     // Where the page stands in Pages (opts.xaml.cs).
     private const int ExtAt = 3;
 
-    // What the person is told, once, about what an extension can do here.
+    // What the person is told, at the top of the page, about what an extension is and can do here.
     private const string ExtLimits =
-        "NEAT runs an extension's pages, its content scripts and its background code in every tab. "
-        + "WebView2 supports only part of the Chrome extension API, though, and it draws none of an extension's own "
-        + "buttons or popups, so what needs those cannot be used. A page that is already open needs a reload "
-        + "before it sees a new extension.";
+        "An extension can read and change the pages you visit, so only install ones you trust. "
+        + "NEAT runs an extension's pages, its content scripts and its background code in every tab. "
+        + "It supports only part of the Chrome extension API, though, and it does not draw an extension's own "
+        + "toolbar button or popup, so whatever needs those cannot be used.";
+
+    // Said after every change. WebView2 applies a change at once; a page that is open may still show the old state.
+    private const string Reload = "Open pages may need a reload for this to apply.";
+
+    // True while an add, a switch or a removal is running. The page is switched off meanwhile (see Work).
+    private bool _xBusy;
+
+    // The folder a package was unpacked into while the person decides whether to add it; null when none.
+    private string? _xStage;
 
     // The copies NEAT keeps of the extensions. One for the whole app, used from the UI thread and, for the slow parts, a pool thread.
     private static ExtStore? _xs;
@@ -74,6 +84,9 @@ public sealed partial class Opts
     /// <summary>Leaves the page and lets go of its controls.</summary>
     private void LeaveExt()
     {
+        // A package that was unpacked and not answered is not wanted any more.
+        Unstage();
+
         _body = null;
         _task = null;
         _note = null;
@@ -100,34 +113,41 @@ public sealed partial class Opts
         if (_body != body)
             return;
 
-        var rows = new List<UIElement>();
-
-        if (!Ext.Can)
-        {
-            rows.Add(Explain(Ext.Why));
-        }
-        else if (!live)
-        {
-            rows.Add(Explain("The browser is still starting. Open this page again in a moment."));
-        }
-        else
-        {
-            rows.Add(Block.Row(_skin, "Add an extension",
-                "Pick the folder that holds the extension's manifest.json. NEAT keeps its own copy, so the folder can be moved or deleted afterwards.",
-                Btn("Add...", AddExt)));
-
-            if (found.Count == 0)
-                rows.Add(Explain("No extensions yet."));
-
-            foreach (var (item, meta) in found)
-                rows.Add(ExtRow(item, meta));
-        }
-
         body.Children.Clear();
+
+        // Without extensions there is nothing to manage: the reason is all the page says.
+        if (!Ext.Can || !live)
+        {
+            body.Children.Add(Block.Head(_skin, "Extensions"));
+            body.Children.Add(Block.Card(_skin, Explain(Ext.Can
+                ? "The browser is still starting. Open this page again in a moment."
+                : Ext.Why)));
+            return;
+        }
+
+        // What an extension is comes before the way to add one.
+        body.Children.Add(Block.Head(_skin, "Before you add one"));
+        body.Children.Add(Block.Card(_skin, Explain(ExtLimits)));
+
+        var add = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        add.Children.Add(Btn("From folder...", () => Work(AddFolder)));
+        add.Children.Add(Btn("From file...", () => Work(AddFile)));
+
+        var rows = new List<UIElement>
+        {
+            Block.Row(_skin, "Add an extension",
+                "Pick the folder that holds the extension's manifest.json, or a .crx or .zip file. NEAT keeps its own copy, so the original can be moved or deleted afterwards.",
+                add),
+        };
+
+        if (found.Count == 0)
+            rows.Add(Explain("No extensions installed"));
+
+        foreach (var (item, meta) in found)
+            rows.Add(ExtRow(item, meta));
+
         body.Children.Add(Block.Head(_skin, "Extensions"));
         body.Children.Add(Block.Card(_skin, rows.ToArray()));
-        body.Children.Add(Block.Head(_skin, "What to expect"));
-        body.Children.Add(Block.Card(_skin, Explain(ExtLimits)));
     }
 
     private UIElement ExtRow(ExtItem x, ExtMeta? m)
@@ -142,21 +162,23 @@ public sealed partial class Opts
             if (quiet)
                 return;
 
-            await Safe(async () =>
+            await Safe(() => Work(async () =>
             {
-                var res = await Ext.Enable(x.Id, sw.IsOn);
+                var on = sw.IsOn;
+                var res = await Ext.Enable(x.Id, on);
                 if (res.Ok)
                 {
-                    Say(string.Empty);
+                    Log.Write("ext", (on ? "turned on " : "turned off ") + x.Id + " (" + name + ")");
+                    Say((on ? "Turned on " : "Turned off ") + name + ". " + Reload);
                     return;
                 }
 
                 // It did not change, so the switch goes back to what the browser has.
                 quiet = true;
-                sw.IsOn = !sw.IsOn;
+                sw.IsOn = !on;
                 quiet = false;
                 Say(res.Err ?? "That did not work.");
-            });
+            }));
         };
 
         var tools = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
@@ -179,7 +201,7 @@ public sealed partial class Opts
     // ---- adding ----
 
     /// <summary>Asks for a folder, reads its manifest and shows what the extension is and what it may do.</summary>
-    private async Task AddExt()
+    private async Task AddFolder()
     {
         var body = _body;
 
@@ -191,6 +213,9 @@ public sealed partial class Opts
         var folder = await picker.PickSingleFolderAsync();
         if (folder is null || _body != body)
             return;
+
+        // Whatever was waiting for an answer is replaced by this one.
+        CloseAdd();
 
         var path = folder.Path;
         if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
@@ -210,75 +235,269 @@ public sealed partial class Opts
         }
 
         Say(string.Empty);
-        TaskAddExt(path, meta);
+        TaskAddExt(path, meta, null);
     }
 
-    private void TaskAddExt(string path, ExtMeta meta)
+    /// <summary>
+    /// Asks for a .crx or .zip file, unpacks it into NEAT's own staging folder (nothing in it is
+    /// run), reads its manifest and shows what the extension is and what it may do. Saying no, or
+    /// leaving the page, deletes what was unpacked.
+    /// </summary>
+    private async Task AddFile()
     {
-        var busy = false;
+        var body = _body;
 
+        var picker = new Windows.Storage.Pickers.FileOpenPicker();
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
+        picker.FileTypeFilter.Add(".crx");
+        picker.FileTypeFilter.Add(".zip");
+
+        var file = await picker.PickSingleFileAsync();
+        if (file is null || _body != body)
+            return;
+
+        CloseAdd();
+
+        var path = file.Path;
+        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+        {
+            Say("NEAT can only read a file on this PC.");
+            return;
+        }
+
+        Say("Opening " + file.Name + "...");
+
+        var (stage, err) = await Task.Run(() => Xs.Stage(path));
+        if (stage is null)
+        {
+            if (_body == body)
+                Say(err ?? "That file could not be opened.");
+
+            return;
+        }
+
+        // The person may have gone to another page while it was unpacking. Nobody is left to answer.
+        if (_body != body)
+        {
+            Toss(stage);
+            return;
+        }
+
+        var folder = Xs.StagePath(stage);
+        var (meta, why) = await Task.Run(() => ExtMeta.Read(folder));
+
+        if (meta is null || _body != body)
+        {
+            Toss(stage);
+
+            if (_body == body)
+                Say(why ?? "That package is not an extension.");
+
+            return;
+        }
+
+        _xStage = stage;
+        Say(string.Empty);
+        TaskAddExt(folder, meta, stage);
+    }
+
+    /// <summary>
+    /// Deletes the package that was unpacked and not answered, if there is one. The deleting is
+    /// done off the UI thread, and by the sweep at the next start if it cannot be done now.
+    /// </summary>
+    private void Unstage()
+    {
+        var stage = _xStage;
+        _xStage = null;
+
+        if (stage is not null)
+            Toss(stage);
+    }
+
+    private static void Toss(string stage)
+    {
+        _ = Keep(() => Xs.Drop(stage));
+    }
+
+    /// <summary>Closes the question about an extension that is waiting, and deletes what it had unpacked.</summary>
+    private void CloseAdd()
+    {
+        CloseTask();
+        Unstage();
+    }
+
+    /// <summary>
+    /// Runs a change (add, switch, remove) with the page's buttons and switches switched off, so
+    /// that a second click cannot start a second change while the first is still running. Only one
+    /// runs at a time, which holds even for a key press that gets past a switched-off button.
+    /// </summary>
+    private async Task Work(Func<Task> job)
+    {
+        if (_xBusy || _body is null)
+            return;
+
+        // WinUI has IsEnabled on a control but not on a panel, so the buttons and switches are
+        // found and switched off one by one. Only the ones that were on are touched, so that they
+        // go back exactly as they were. What the job adds meanwhile (a new card) is not in the list.
+        var off = new List<Control>();
+        Controls(_body, off);
+        Controls(_task, off);
+
+        _xBusy = true;
+        foreach (var c in off)
+            c.IsEnabled = false;
+
+        try
+        {
+            await job();
+        }
+        finally
+        {
+            // Controls that the page has dropped meanwhile are switched back too; nobody sees that.
+            _xBusy = false;
+            foreach (var c in off)
+                c.IsEnabled = true;
+        }
+    }
+
+    // Collects the buttons and switches that are on, anywhere under a part of the page. A card is a
+    // Border round a StackPanel, a row is a Grid: those are the only containers the page is made of.
+    private static void Controls(UIElement? at, List<Control> into)
+    {
+        if (at is Button or ToggleSwitch)
+        {
+            var c = (Control)at;
+            if (c.IsEnabled)
+                into.Add(c);
+        }
+        else if (at is Panel panel)
+        {
+            foreach (var child in panel.Children)
+                Controls(child, into);
+        }
+        else if (at is Border border)
+        {
+            Controls(border.Child, into);
+        }
+    }
+
+    // The words of the high risk warning: bold, in the red that the failure lines use.
+    private static TextBlock Warn(string text)
+    {
+        return new TextBlock
+        {
+            Text = text,
+            FontSize = 12,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.IndianRed),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(16, 12, 16, 12),
+        };
+    }
+
+    private static string Bullets(IEnumerable<string> lines)
+    {
+        return string.Join("\n", lines.Select(c => "\u2022 " + c));
+    }
+
+    /// <summary>
+    /// The question before anything is added: what the extension is and, in plain words, what it
+    /// can do, with the high risk part said first and said as such. Cancel changes nothing. For a
+    /// package, stage is the folder it was unpacked into; for a folder it is null and path is the
+    /// folder to copy.
+    /// </summary>
+    private void TaskAddExt(string path, ExtMeta meta, string? stage)
+    {
         async Task Go()
         {
-            // A second click while the first is working would add it twice.
-            if (busy)
-                return;
-
-            busy = true;
             var body = _body;
 
             // The copy is what is added, at the place it will stay: WebView2 remembers the folder,
-            // and the extension is gone the day that folder moves or changes.
+            // and the extension is gone the day that folder moves or changes. A folder is copied
+            // there; a package is already unpacked, and is moved there before WebView2 hears of it.
             string dir;
             try
             {
-                dir = await Task.Run(() => Xs.Put(path, meta.Name));
+                if (stage is null)
+                {
+                    dir = await Task.Run(() => Xs.Put(path, meta.Name));
+                }
+                else
+                {
+                    var st = stage;
+                    dir = await Task.Run(() => Xs.Settle(st, meta.Name));
+                    _xStage = null;
+                }
             }
             catch (Exception ex)
             {
-                Log.Error("ext", ex, "copying an extension failed");
-                Fail(ex is InvalidOperationException ? ex.Message : "NEAT could not copy that folder.");
-                busy = false;
+                // A package stays unpacked, so the person can try again or say Cancel.
+                Log.Error("ext", ex, "keeping an extension failed");
+                Fail(ex is InvalidOperationException ? ex.Message : "NEAT could not keep a copy of that extension.");
                 return;
             }
 
             var res = await Ext.Add(Xs.Full(dir));
             if (!res.Ok || res.Item is null)
             {
-                await Task.Run(() => Xs.Discard(dir));
-                Fail(res.Err ?? "The extension could not be added.");
-                busy = false;
+                await Keep(() => Xs.Discard(dir));
+                Log.Write("ext", "adding " + meta.Name + " failed");
+
+                // A package has been moved by now, so the question cannot be asked again: the person starts over.
+                if (stage is null)
+                {
+                    Fail(res.Err ?? "The extension could not be added.");
+                }
+                else if (_body == body)
+                {
+                    CloseTask();
+                    Say(res.Err ?? "The extension could not be added.");
+                }
+
                 return;
             }
 
             // Without this link the extension still works; only its version and description are lost.
             await Keep(() => Xs.Link(res.Item.Id, dir));
 
+            var shown = res.Item.Name.Length > 0 ? res.Item.Name : meta.Name;
+            Log.Write("ext", "added " + res.Item.Id + " (" + shown + ")");
+
             if (_body != body)
                 return;
 
             CloseTask();
-            Say("Added " + (res.Item.Name.Length > 0 ? res.Item.Name : meta.Name) + ".");
+            Say("Added " + shown + ". " + Reload);
             await RefreshExt();
         }
 
         var rows = new List<UIElement>
         {
             Block.Row(_skin, meta.Name, meta.Description.Length > 0 ? meta.Description : null, Block.Value(_skin, "Version " + meta.Version)),
-            Explain(meta.Can.Count == 0
-                ? "It asks for no special permissions."
-                : "It can:\n" + string.Join("\n", meta.Can.Select(c => "\u2022 " + c))),
         };
+
+        if (meta.Risk.Count > 0)
+            rows.Add(Warn("High risk. This extension can:\n" + Bullets(meta.Risk) + "\nOnly add it if you trust where it came from."));
+
+        var other = meta.Can.Where(c => !meta.Risk.Contains(c)).ToList();
+        if (other.Count > 0)
+            rows.Add(Explain((meta.Risk.Count > 0 ? "It can also:\n" : "It can:\n") + Bullets(other)));
+        else if (meta.Can.Count == 0)
+            rows.Add(Explain("It asks for no special permissions."));
 
         if (meta.Mv == 2)
             rows.Add(Explain("This extension uses the older Manifest V2 format, which current versions of Chromium may refuse to run."));
 
-        ShowTask("Add an extension", rows, Btn("Add extension", Go), Btn("Cancel", () => Start(CloseTask)));
+        ShowTask("Add an extension", rows, Btn("Add extension", () => Work(Go)), Btn("Cancel", () => Start(CloseAdd)));
     }
 
     // ---- removing ----
 
     private void TaskRemoveExt(ExtItem x, string name, bool hasCopy)
     {
+        // This card takes the place of a question that was waiting about a package.
+        Unstage();
+
         async Task Go()
         {
             var body = _body;
@@ -292,12 +511,13 @@ public sealed partial class Opts
 
             // It is gone from the browser, so its copy goes too, whether or not the page is still on show.
             await Keep(() => Xs.Forget(x.Id));
+            Log.Write("ext", "removed " + x.Id + " (" + name + ")");
 
             if (_body != body)
                 return;
 
             CloseTask();
-            Say("Removed " + name + ".");
+            Say("Removed " + name + ". " + Reload);
             await RefreshExt();
         }
 
@@ -309,7 +529,7 @@ public sealed partial class Opts
                     ? "Remove " + name + "? NEAT deletes its own copy of the extension. This cannot be undone."
                     : "Remove " + name + "? This cannot be undone."),
             },
-            Btn("Remove", Go),
+            Btn("Remove", () => Work(Go)),
             Btn("Cancel", () => Start(CloseTask)));
     }
 }

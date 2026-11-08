@@ -15,6 +15,13 @@ namespace neat;
 /// file (extensions.json) keeps the link from that id to its folder; it is how the version and the
 /// description are found again later.
 ///
+/// A package (.crx or .zip) is unpacked into a staging folder first (<see cref="Stage"/>), so that the
+/// person can be asked about what it can do before it becomes an extension. Answering yes moves it
+/// into place (<see cref="Settle"/>), answering no, or leaving the page, deletes it (<see cref="Drop"/>).
+/// A staging folder that is still there at the next start (the app was killed in between) is
+/// deleted by <see cref="Sweep"/>; nothing outside the staging folder is ever deleted that way,
+/// because a folder of an extension that is installed must never be taken for a leftover.
+///
 /// Used from the UI thread, and from a pool thread for the slow parts (copying, deleting); every
 /// access to the list takes a lock. Nothing here depends on WinUI or WebView2, so tests/ext.check
 /// runs it as it is.
@@ -22,6 +29,10 @@ namespace neat;
 internal sealed class ExtStore
 {
     private const string MapFile = "extensions.json";
+
+    // Where packages are unpacked until the person has answered. Not a name Put or Settle can make
+    // (theirs end in a random part), so it can never be the folder of an extension.
+    private const string StageDir = ".stage";
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -33,6 +44,9 @@ internal sealed class ExtStore
     private readonly object _gate = new();
     private MapData? _map;
 
+    // The staging folders that are in use right now, so that Sweep leaves them alone. Under _gate.
+    private readonly HashSet<string> _hold = new(StringComparer.Ordinal);
+
     public ExtStore(string root) => _root = root;
 
     /// <summary>The folder that holds the copies.</summary>
@@ -42,6 +56,11 @@ internal sealed class ExtStore
     public long MaxBytes { get; init; } = 256L * 1024 * 1024;
 
     public int MaxFiles { get; init; } = 20000;
+
+    /// <summary>The most a .crx or .zip may weigh once unpacked, and how many files it may hold. Settable for tests.</summary>
+    public long PackBytes { get; init; } = 200L * 1024 * 1024;
+
+    public int PackFiles { get; init; } = 5000;
 
     /// <summary>The list on disk. Dirs: extension id to the folder name. Gone: folders still to delete.</summary>
     private sealed class MapData
@@ -77,6 +96,62 @@ internal sealed class ExtStore
 
     /// <summary>The full path of a folder in the store.</summary>
     public string Full(string dir) => Path.Combine(_root, dir);
+
+    /// <summary>
+    /// Unpacks a .crx or .zip into a staging folder. Returns the name of the staging folder, or a
+    /// sentence for the person when the package is not acceptable (then nothing is left behind).
+    /// Runs on a pool thread. Whoever gets a name back owes a <see cref="Settle"/> or a
+    /// <see cref="Drop"/> for it.
+    /// </summary>
+    public (string? Stage, string? Err) Stage(string package)
+    {
+        var id = Guid.NewGuid().ToString("N")[..12];
+
+        // Held before the folder exists, so that no Sweep can see it without also seeing the hold.
+        lock (_gate)
+            _hold.Add(id);
+
+        var err = ExtPack.Open(package, Path.Combine(_root, StageDir, id), PackBytes, PackFiles);
+        if (err is not null)
+        {
+            Drop(id);
+            return (null, err);
+        }
+
+        return (id, null);
+    }
+
+    /// <summary>The full path of a staging folder (what to read the manifest from).</summary>
+    public string StagePath(string stage) => Path.Combine(_root, StageDir, Plain(stage) ? stage : "x");
+
+    /// <summary>
+    /// Moves a staging folder into the store as the copy of an extension and returns its name. This
+    /// is the last move the folder makes: it happens before WebView2 is told about it, because
+    /// WebView2 remembers the place and loses the extension if the place changes. On a failure the
+    /// staging folder is still there and still held, for the caller to <see cref="Drop"/>.
+    /// </summary>
+    public string Settle(string stage, string name)
+    {
+        var dir = Slug(name) + "-" + Guid.NewGuid().ToString("N")[..8];
+
+        // Same drive, so it is a rename, not a copy.
+        Directory.Move(StagePath(stage), Path.Combine(_root, dir));
+
+        lock (_gate)
+            _hold.Remove(stage);
+
+        return dir;
+    }
+
+    /// <summary>Deletes a staging folder that nobody wants. One that cannot be deleted now is left for <see cref="Sweep"/>.</summary>
+    public void Drop(string stage)
+    {
+        lock (_gate)
+            _hold.Remove(stage);
+
+        if (Plain(stage))
+            TryDelete(StagePath(stage));
+    }
 
     /// <summary>Records that the extension WebView2 knows by this id lives in this folder.</summary>
     public void Link(string id, string dir)
@@ -131,9 +206,11 @@ internal sealed class ExtStore
             TryDelete(Path.Combine(_root, dir));
     }
 
-    /// <summary>Deletes the copies that Forget could not delete at the time.</summary>
+    /// <summary>Deletes the copies that Forget could not delete at the time, and the staging folders nobody is using.</summary>
     public void Sweep()
     {
+        SweepStage();
+
         List<string> todo;
         lock (_gate)
             todo = Load().Gone.ToList();
@@ -151,6 +228,38 @@ internal sealed class ExtStore
             var map = Load();
             map.Gone.RemoveAll(d => done.Contains(d) || bad.Contains(d));
             Save(map);
+        }
+    }
+
+    // Deletes what is in the staging folder and is not held: the rest of a run that ended before its
+    // question was answered.
+    private void SweepStage()
+    {
+        var dir = Path.Combine(_root, StageDir);
+        string[] found;
+
+        try
+        {
+            if (!Directory.Exists(dir))
+                return;
+
+            found = Directory.GetDirectories(dir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        // The holds are read AFTER the folder was listed. Stage holds before it makes a folder, so
+        // a folder in the list that is not in the holds really is nobody's.
+        HashSet<string> held;
+        lock (_gate)
+            held = _hold.ToHashSet();
+
+        foreach (var d in found)
+        {
+            if (!held.Contains(Path.GetFileName(d)))
+                TryDelete(d);
         }
     }
 

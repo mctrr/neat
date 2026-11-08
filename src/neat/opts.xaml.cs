@@ -273,6 +273,11 @@ public sealed partial class Opts : Window
         LeavePass();
         _clip?.ClearNow();
 
+        // A package that was unpacked on the Extensions page and not answered is deleted: Pick
+        // would do it on leaving the page, but closing the window does not go through Pick.
+        if (_at == ExtAt)
+            LeaveExt();
+
         // A closing window does not reliably tell its content it is unloaded, so the
         // colour menu is told to stop following the colour here.
         _pk?.Detach();

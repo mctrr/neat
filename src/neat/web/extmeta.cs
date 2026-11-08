@@ -32,6 +32,16 @@ internal sealed class ExtMeta
         "search", "favicon", "readingList", "webRequestAuthProvider", "background", "action",
     };
 
+    // The permissions that let an extension see or change a great deal of what the person does, or
+    // work behind the person's back. The person is told so in as many words, not just shown the line.
+    // (declarativeNetRequest is here because its rules cannot be judged without running them: it may
+    // block one ad or every request.) Wide host access counts too: see Everywhere.
+    private static readonly HashSet<string> Risky = new(StringComparer.Ordinal)
+    {
+        "cookies", "webRequest", "webRequestBlocking", "declarativeNetRequest", "tabs", "history",
+        "bookmarks", "downloads", "nativeMessaging", "debugger", "management", "proxy",
+    };
+
     // The rest, as a sentence that finishes "It can: ...". Several permissions may say the same thing.
     private static readonly Dictionary<string, string> Says = new(StringComparer.Ordinal)
     {
@@ -76,6 +86,9 @@ internal sealed class ExtMeta
     /// <summary>What the extension is allowed to do, one short sentence each; empty when it asks for nothing notable.</summary>
     public List<string> Can { get; init; } = new();
 
+    /// <summary>The lines of <see cref="Can"/> that are high risk (see Risky), in the same words. Empty when none is.</summary>
+    public List<string> Risk { get; init; } = new();
+
     /// <summary>
     /// Reads manifest.json in a folder. Returns the facts, or null and a sentence for the person
     /// when the folder is not an extension.
@@ -105,13 +118,16 @@ internal sealed class ExtMeta
             if (name.Length == 0 || version.Length == 0 || mv == 0)
                 return (null, "manifest.json is missing the name, the version or the manifest version, so it is not an extension.");
 
+            var (can, risk) = Wants(root);
+
             return (new ExtMeta
             {
                 Name = Say(folder, root, name),
                 Version = version,
                 Description = Say(folder, root, Str(root, "description")),
                 Mv = mv,
-                Can = Wants(root),
+                Can = can,
+                Risk = risk,
             }, null);
         }
         catch (JsonException)
@@ -183,8 +199,11 @@ internal sealed class ExtMeta
         yield return "en_US";
     }
 
-    /// <summary>What the manifest asks for, as sentences: the sites first, then the other permissions.</summary>
-    private static List<string> Wants(JsonElement root)
+    /// <summary>
+    /// What the manifest asks for, as sentences: the sites first, then the other permissions. The
+    /// second list holds the ones among them that are high risk.
+    /// </summary>
+    private static (List<string> Can, List<string> Risk) Wants(JsonElement root)
     {
         var apis = new List<string>();
         var hosts = new List<string>();
@@ -203,10 +222,17 @@ internal sealed class ExtMeta
         }
 
         var can = new List<string>();
+        var risk = new List<string>();
 
         var sites = Sites(hosts);
         if (sites is not null)
+        {
             can.Add(sites);
+
+            // Every site is the same as being able to read everything the person does on the web.
+            if (hosts.Any(Everywhere))
+                risk.Add(sites);
+        }
 
         // Two permissions can say the same thing; it is shown once.
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -218,9 +244,13 @@ internal sealed class ExtMeta
             var line = Says.TryGetValue(api, out var said) ? said : "Use the \"" + api + "\" permission";
             if (seen.Add(line))
                 can.Add(line);
+
+            // Judged on the permission, not on whether its line was new: two may say the same thing.
+            if (Risky.Contains(api) && !risk.Contains(line))
+                risk.Add(line);
         }
 
-        return can;
+        return (can, risk);
     }
 
     // A list of strings is split into site patterns (they have a scheme) and API permissions.
@@ -242,6 +272,12 @@ internal sealed class ExtMeta
         }
     }
 
+    // These patterns match every site.
+    private static bool Everywhere(string p)
+    {
+        return p is "<all_urls>" or "*://*/*" or "http://*/*" or "https://*/*" or "*://*/" or "http://*/" or "https://*/";
+    }
+
     private static string? Sites(List<string> patterns)
     {
         if (patterns.Count == 0)
@@ -251,8 +287,7 @@ internal sealed class ExtMeta
 
         foreach (var p in patterns)
         {
-            // These patterns match every site.
-            if (p is "<all_urls>" or "*://*/*" or "http://*/*" or "https://*/*" or "*://*/" or "http://*/" or "https://*/")
+            if (Everywhere(p))
                 return "Read and change all your data on all websites";
 
             var at = p.IndexOf("://", StringComparison.Ordinal);
