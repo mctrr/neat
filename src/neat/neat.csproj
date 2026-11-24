@@ -48,16 +48,11 @@
          here. -->
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
 
-    <!-- Fixed Version WebView2 runtime, bundled next to neat.exe in a
-         "WebView2" folder (copied automatically on build/publish). Same
-         community package Mozart uses. It is large (~250 MB), so
-         the first restore is slow; that is expected. See
-         web/env.cs for how the app points WebView2 at it.
-         Since 152.0.4191.53 the runtime no longer fits in one NuGet package,
-         so it is split in two: both are required, and they must stay on the
-         same version. -->
-    <PackageReference Include="WebView2.Runtime.X64" Version="157.0.4341.42" />
-    <PackageReference Include="WebView2.Runtime.X64.Core" Version="157.0.4341.42" />
+    <!-- The WebView2 runtime is no longer bundled here. Env.Configure() uses the
+         system-wide Evergreen runtime when no WebView2 folder sits next to
+         neat.exe; the optional installer component can still drop a Fixed
+         Version runtime there for machines that need it. This cut ~500 MB
+         from the default install. -->
 
     <!-- SQLite for history and bookmarks (browser.db). Same version Mozart uses. -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.8" />

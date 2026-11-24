@@ -27,3 +27,6 @@ Thumbs.db
 # Downloaded by tools/fetch-ads.ps1. Bundled here so the fork builds with the
 # blocker out of the box; only the temporary staging folder is ignored.
 /ads-dl/.download/
+
+# Installer build output (large exe) is shipped via GitHub Releases, not git.
+/build-installer/Output/
