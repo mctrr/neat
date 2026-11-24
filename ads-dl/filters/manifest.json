@@ -1,0 +1,1157 @@
+{
+  "schema": 1,
+  "version": "2026.11.24.0951",
+  "generated": "2026-11-24T09:51:23.345Z",
+  "upstream": {
+    "uAssets": "d45256ec8739ffc882883787ce7ee740e34c19ac",
+    "uBlock": "ad1be8e052923466e49293588e56fb61a902e8fc",
+    "braveResources": "580053211b4dd8c35f47da14b66467eafcec245b"
+  },
+  "files": [
+    {
+      "name": "adguard-cookies.txt",
+      "kind": "list",
+      "title": "AdGuard – Cookie Notices [adguard-cookies]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/18.txt",
+      "sha256": "2eae1e68f9c0aad3290deb3447471abab765429db87c036d5c944fa48f46b2ad",
+      "size": 1312111,
+      "rules": {
+        "network": 2915,
+        "cosmetic": 17918
+      },
+      "invalidLines": 15
+    },
+    {
+      "name": "adguard-mobile-app-banners.txt",
+      "kind": "list",
+      "title": "AdGuard – Mobile App Banners [adguard-mobile-app-banners]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/20.txt",
+      "sha256": "2e16bb331d7049bf528a4111c94c42096a90a99e7088aa2c3c0386621b2f16a9",
+      "size": 337913,
+      "rules": {
+        "network": 179,
+        "cosmetic": 5352
+      },
+      "invalidLines": 19
+    },
+    {
+      "name": "adguard-other-annoyances.txt",
+      "kind": "list",
+      "title": "AdGuard – Other Annoyances [adguard-other-annoyances]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/21.txt",
+      "sha256": "dc2cd49259031f9a96dc2a1b59b3f44ef4996492bffcaef52335a292f54b8589",
+      "size": 604652,
+      "rules": {
+        "network": 553,
+        "cosmetic": 7932
+      },
+      "invalidLines": 61
+    },
+    {
+      "name": "adguard-popup-overlays.txt",
+      "kind": "list",
+      "title": "AdGuard – Popup Overlays [adguard-popup-overlays]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/19.txt",
+      "sha256": "90330e484a208386e3fde4e04cc6cfa83d088e8dbd4379733f512f248c6c6cf2",
+      "size": 1361832,
+      "rules": {
+        "network": 2236,
+        "cosmetic": 20397
+      },
+      "invalidLines": 106
+    },
+    {
+      "name": "adguard-social.txt",
+      "kind": "list",
+      "title": "AdGuard – Social Widgets [adguard-social]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/4.txt",
+      "sha256": "71d9a6909afae7a6810e4e9e2f8f6798f464a4289b8440584c506d786c528f8e",
+      "size": 897033,
+      "rules": {
+        "network": 630,
+        "cosmetic": 15694
+      },
+      "invalidLines": 290
+    },
+    {
+      "name": "adguard-widgets.txt",
+      "kind": "list",
+      "title": "AdGuard – Widgets [adguard-widgets]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/22.txt",
+      "sha256": "cc65d34f112c1ad4f256172f2d94a2080b7b760a0faea4b879529f46b79a88db",
+      "size": 136345,
+      "rules": {
+        "network": 858,
+        "cosmetic": 1854
+      },
+      "invalidLines": 36
+    },
+    {
+      "name": "alb-0.txt",
+      "kind": "list",
+      "title": "🇦🇱al 🇽🇰xk: Adblock List for Albania [ALB-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/AnXh3L0/blocklist/master/albanian-easylist-addition/Albania.txt",
+      "sha256": "e6db421d20233a60cd5a9f3e653f2b68301141ec9afda2cbdab68e49f60e6a53",
+      "size": 12353,
+      "rules": {
+        "network": 33,
+        "cosmetic": 270
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "ara-0.txt",
+      "kind": "list",
+      "title": "🇪🇬eg 🇸🇦sa 🇲🇦ma 🇩🇿dz: Liste AR [ara-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://easylist-downloads.adblockplus.org/Liste_AR.txt",
+      "sha256": "9b4465b46df9d66eb469d9afb205fa8233da2628edea87b329030ab4d5bce17c",
+      "size": 56673,
+      "rules": {
+        "network": 943,
+        "cosmetic": 573
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "bgr-0.txt",
+      "kind": "list",
+      "title": "🇧🇬bg: Bulgarian Adblock list [BGR-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://stanev.org/abp/adblock_bg.txt",
+      "sha256": "5b9073adb785a0d1c79f16050accfd3c44a972c816a1f8e70bacd963166881ba",
+      "size": 51458,
+      "rules": {
+        "network": 704,
+        "cosmetic": 445
+      },
+      "invalidLines": 1
+    },
+    {
+      "name": "chn-0.txt",
+      "kind": "list",
+      "title": "🇨🇳cn 🇹🇼tw: AdGuard Chinese (中文) [CHN-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/224.txt",
+      "sha256": "e11b947cee75529b349fbab8b82cb9728d83e138491e716e823e38ac35c5fce6",
+      "size": 666371,
+      "rules": {
+        "network": 12322,
+        "cosmetic": 8393
+      },
+      "invalidLines": 37
+    },
+    {
+      "name": "cze-0.txt",
+      "kind": "list",
+      "title": "🇨🇿cz 🇸🇰sk: EasyList Czech and Slovak [CZE-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/tomasko126/easylistczechandslovak/master/filters.txt",
+      "sha256": "1b9d0e2cb75baed736f3efe39c6a3b2e221abe8bfd459512734d6c36efe03793",
+      "size": 28485,
+      "rules": {
+        "network": 255,
+        "cosmetic": 473
+      },
+      "invalidLines": 3
+    },
+    {
+      "name": "deu-0.txt",
+      "kind": "list",
+      "title": "🇩🇪de 🇨🇭ch 🇦🇹at: EasyList Germany [DEU-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://easylist.to/easylistgermany/easylistgermany.txt",
+      "sha256": "fa613ab86b3a1d86d0487ad8592b4c765c02c0f10618d5e5bcbb0b3dccda76aa",
+      "size": 276601,
+      "rules": {
+        "network": 2227,
+        "cosmetic": 3739
+      },
+      "invalidLines": 5
+    },
+    {
+      "name": "documents.txt",
+      "kind": "list",
+      "title": "Page rules (those with $document, $doc or $all)",
+      "format": "standard",
+      "role": "document",
+      "tier": "standard",
+      "trusted": false,
+      "sha256": "2b56b01566e0b56f850e323085703977b2a8530a4ac9a9f1ed6f85e6971837e6",
+      "size": 13208409,
+      "rules": {
+        "network": 118578,
+        "cosmetic": 0
+      },
+      "invalidLines": 306
+    },
+    {
+      "name": "easylist-annoyances.txt",
+      "kind": "list",
+      "title": "EasyList – Other Annoyances [easylist-annoyances]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/thirdparties/easylist/easylist-annoyances.txt",
+      "sha256": "c65c372d73f1c3aa5e81d712fb4228ca5174cf14100373627abd1b55d60d081d",
+      "size": 154204,
+      "rules": {
+        "network": 758,
+        "cosmetic": 3294
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "easylist-chat.txt",
+      "kind": "list",
+      "title": "EasyList – Chat Widgets [easylist-chat]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/thirdparties/easylist/easylist-chat.txt",
+      "sha256": "b361c3ca58ed1a830722dff86d8a8ee8bd98770370f7b7ec55c0121084412c7a",
+      "size": 9600,
+      "rules": {
+        "network": 252,
+        "cosmetic": 37
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "easylist-newsletters.txt",
+      "kind": "list",
+      "title": "EasyList – Newsletter Notices [easylist-newsletters]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/thirdparties/easylist/easylist-newsletters.txt",
+      "sha256": "b50270216550937e03a53751ee67a370be814c1d6e1c9f217125d3e36782ffb9",
+      "size": 292431,
+      "rules": {
+        "network": 193,
+        "cosmetic": 5900
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "easylist-notifications.txt",
+      "kind": "list",
+      "title": "EasyList – Notifications [easylist-notifications]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/thirdparties/easylist/easylist-notifications.txt",
+      "sha256": "b15529c719fb973dd950ad0d1f71e4a2070c4acb3dd67fe221e303b90bee087e",
+      "size": 71950,
+      "rules": {
+        "network": 495,
+        "cosmetic": 1198
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "easylist.txt",
+      "kind": "list",
+      "title": "EasyList [easylist]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/thirdparties/easylist/easylist.txt",
+      "sha256": "f994bc482d66ebd430ed22294bad07b01cdd0078868dc147ebaf9b2d907b50b1",
+      "size": 1967263,
+      "rules": {
+        "network": 50016,
+        "cosmetic": 24831
+      },
+      "invalidLines": 7
+    },
+    {
+      "name": "easyprivacy.txt",
+      "kind": "list",
+      "title": "EasyPrivacy [easyprivacy]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/thirdparties/easylist/easyprivacy.txt",
+      "sha256": "9685217ec9f0bfa5db3349135ef4c53385c268af572f1db0eab85fd6da5c5c4f",
+      "size": 1497486,
+      "rules": {
+        "network": 56760,
+        "cosmetic": 39
+      },
+      "invalidLines": 2
+    },
+    {
+      "name": "est-0.txt",
+      "kind": "list",
+      "title": "🇪🇪ee: Eesti saitidele kohandatud filter [EST-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://ubo-et.lepik.io/list.txt",
+      "sha256": "f8b64f017f8ee47f0035ac46fbc2646b3883eb99dcc724a5896fe60877d938aa",
+      "size": 15242,
+      "rules": {
+        "network": 260,
+        "cosmetic": 191
+      },
+      "invalidLines": 8
+    },
+    {
+      "name": "fanboy-ai-suggestions.txt",
+      "kind": "list",
+      "title": "EasyList – AI Widgets [fanboy-ai-suggestions]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/thirdparties/easylist/easylist-ai.txt",
+      "sha256": "519ea09240ab379ba8245068d9f64a288d81529e66228c77f77f09a1a3046048",
+      "size": 14152,
+      "rules": {
+        "network": 32,
+        "cosmetic": 264
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "fanboy-cookiemonster.txt",
+      "kind": "list",
+      "title": "EasyList – Cookie Notices [fanboy-cookiemonster]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/thirdparties/easylist/easylist-cookies.txt",
+      "sha256": "69b6225e3379f01f65c324d3124bb2f1e1ba93e8e4232350141b65f634b425bc",
+      "size": 1193937,
+      "rules": {
+        "network": 2117,
+        "cosmetic": 26115
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "fanboy-social.txt",
+      "kind": "list",
+      "title": "EasyList – Social Widgets [fanboy-social]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/thirdparties/easylist/easylist-social.txt",
+      "sha256": "3bf718043ec612495eb5552188112cb60b0ebc339c0b0492764a098ef72e07d1",
+      "size": 402967,
+      "rules": {
+        "network": 668,
+        "cosmetic": 13279
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "fanboy-thirdparty_social.txt",
+      "kind": "list",
+      "title": "Fanboy – Anti-Facebook [fanboy-thirdparty_social]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://secure.fanboy.co.nz/fanboy-antifacebook.txt",
+      "sha256": "8b3a50186bdd80d6d9c84d6f3e338a84652ab629dbb8219be137249141841614",
+      "size": 3749,
+      "rules": {
+        "network": 67,
+        "cosmetic": 1
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "fin-0.txt",
+      "kind": "list",
+      "title": "🇫🇮fi: Adblock List for Finland [FIN-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/finnish-easylist-addition/finnish-easylist-addition/gh-pages/Finland_adb.txt",
+      "sha256": "1f9c9421f7cf25d5b4c40dc617aa2f3e0369e0e0540dc7ef6c2c08916eeade9c",
+      "size": 74088,
+      "rules": {
+        "network": 207,
+        "cosmetic": 999
+      },
+      "invalidLines": 2
+    },
+    {
+      "name": "fra-0.txt",
+      "kind": "list",
+      "title": "🇫🇷fr 🇧🇪be 🇨🇦ca: AdGuard Français [FRA-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/16.txt",
+      "sha256": "7e0921fd45e3c607320828a52a73e4d4bfdc1851ccbc7ad4f4df63c8796ad761",
+      "size": 506319,
+      "rules": {
+        "network": 10734,
+        "cosmetic": 4652
+      },
+      "invalidLines": 34
+    },
+    {
+      "name": "grc-0.txt",
+      "kind": "list",
+      "title": "🇬🇷gr 🇨🇾cy: Greek AdBlock Filter [GRC-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://www.void.gr/kargig/void-gr-filters.txt",
+      "sha256": "641aecdabfd93ca5ae702b0b144c921c16bd889cf55edd41f2380b635091fcc3",
+      "size": 52937,
+      "rules": {
+        "network": 471,
+        "cosmetic": 792
+      },
+      "invalidLines": 4
+    },
+    {
+      "name": "hagezi-pro.txt",
+      "kind": "list",
+      "title": "HaGeZi's Multi PRO (ads, trackers, telemetry, malware) [hagezi-pro]",
+      "format": "standard",
+      "role": "network",
+      "tier": "strong",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt",
+      "sha256": "3d5f038e733dbe57ad84a6ec43db453b15b8b5de7e0d46476d489493560379e5",
+      "size": 5716015,
+      "rules": {
+        "network": 246126,
+        "cosmetic": 0
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "hrv-0.txt",
+      "kind": "list",
+      "title": "🇭🇷hr 🇷🇸rs: Dandelion Sprout's Serbo-Croatian filters [HRV-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/SerboCroatianList.txt",
+      "sha256": "13240148b5af66ad188461e6b871fbd8b66f495a2638d93fc9f1c601e42a29e2",
+      "size": 20714,
+      "rules": {
+        "network": 100,
+        "cosmetic": 405
+      },
+      "invalidLines": 1
+    },
+    {
+      "name": "hun-0.txt",
+      "kind": "list",
+      "title": "🇭🇺hu: hufilter [HUN-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://cdn.jsdelivr.net/gh/hufilter/hufilter@gh-pages/hufilter-ublock.txt",
+      "sha256": "ee7a1a13efcb7dc533afbf0800cb457db7b7f0120b978c36188deaba699d97fd",
+      "size": 78731,
+      "rules": {
+        "network": 392,
+        "cosmetic": 1609
+      },
+      "invalidLines": 15
+    },
+    {
+      "name": "idn-0.txt",
+      "kind": "list",
+      "title": "🇮🇩id 🇲🇾my: ABPindo [IDN-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/ABPindo/indonesianadblockrules/master/subscriptions/abpindo.txt",
+      "sha256": "64ced1bedbd78d5cf09797affd290e1dc03ddb79fc355ad1f2727fe02ab69409",
+      "size": 303486,
+      "rules": {
+        "network": 3723,
+        "cosmetic": 5982
+      },
+      "invalidLines": 6
+    },
+    {
+      "name": "ind-0.txt",
+      "kind": "list",
+      "title": "🇮🇳in 🇱🇰lk 🇳🇵np: IndianList [IND-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://easylist-downloads.adblockplus.org/indianlist.txt",
+      "sha256": "49eb9ac9cb0b3f383a57be4f966c6b57e22f51856cfd4e2e48bec1ff9bb84be6",
+      "size": 659029,
+      "rules": {
+        "network": 5432,
+        "cosmetic": 5245
+      },
+      "invalidLines": 29
+    },
+    {
+      "name": "irn-0.txt",
+      "kind": "list",
+      "title": "🇮🇷ir: فارسی (Persian) [IRN-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/PersianBlocker/PersianBlocker/main/PersianBlocker.txt",
+      "sha256": "c8a07987d28ef73ad5fb05ff73de1084ca892ddc86f7b9ceb562865f7e7751d6",
+      "size": 171771,
+      "rules": {
+        "network": 1009,
+        "cosmetic": 1637
+      },
+      "invalidLines": 44
+    },
+    {
+      "name": "isl-0.txt",
+      "kind": "list",
+      "title": "🇮🇸is: Icelandic ABP List [ISL-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/brave/adblock-lists/master/custom/is.txt",
+      "sha256": "09179ed249ce4cb03d5aa9961906724907426150e5a800274320b1e1c613dd25",
+      "size": 2590,
+      "rules": {
+        "network": 12,
+        "cosmetic": 70
+      },
+      "invalidLines": 1
+    },
+    {
+      "name": "isr-0.txt",
+      "kind": "list",
+      "title": "🇮🇱il: EasyList Hebrew [ISR-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/easylist/EasyListHebrew/master/EasyListHebrew.txt",
+      "sha256": "0a94734f689c034d0150ca030ae17d99e9d23fc0f97ae721a56080946aec8515",
+      "size": 121338,
+      "rules": {
+        "network": 417,
+        "cosmetic": 1034
+      },
+      "invalidLines": 6
+    },
+    {
+      "name": "ita-0.txt",
+      "kind": "list",
+      "title": "🇮🇹it: EasyList Italy [ITA-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://easylist-downloads.adblockplus.org/easylistitaly.txt",
+      "sha256": "0037c81c8eaba0d14f2a1a81cce633946b6a47b9b15bd2f660c911131dbf3bd2",
+      "size": 187298,
+      "rules": {
+        "network": 1135,
+        "cosmetic": 3055
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "jpn-1.txt",
+      "kind": "list",
+      "title": "🇯🇵jp: AdGuard Japanese [JPN-1]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/7.txt",
+      "sha256": "8f59bd15733b72b391668506034fa51b2f74d393bfc889f1cf96dd772ab7095f",
+      "size": 711468,
+      "rules": {
+        "network": 2352,
+        "cosmetic": 9782
+      },
+      "invalidLines": 198
+    },
+    {
+      "name": "kor-1.txt",
+      "kind": "list",
+      "title": "🇰🇷kr: 한국어 (Korean) [KOR-1]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://cdn.jsdelivr.net/npm/@filteringdev/filterslists-ko@latest/dist/filterslist-uBlockOrigin-classic.txt",
+      "sha256": "2aeaca23cc1b80c9421d240d6580afefe670afa7bdac14fda5741b8bab34035d",
+      "size": 230361,
+      "rules": {
+        "network": 1569,
+        "cosmetic": 2124
+      },
+      "invalidLines": 419
+    },
+    {
+      "name": "ltu-0.txt",
+      "kind": "list",
+      "title": "🇱🇹lt: EasyList Lithuania [LTU-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/EasyList-Lithuania/easylist_lithuania/master/easylistlithuania.txt",
+      "sha256": "c7063f84b29a6e6aad3df8e2471a72ccd09ae82e7096a96e03a57fa5355f4155",
+      "size": 52168,
+      "rules": {
+        "network": 563,
+        "cosmetic": 628
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "lva-0.txt",
+      "kind": "list",
+      "title": "🇱🇻lv: Latvian List [LVA-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/Latvian-List/adblock-latvian/master/lists/latvian-list.txt",
+      "sha256": "6f7bae20cd752b699e1cf04d31140efb2c592839b15099ff06ba40c26c964eb3",
+      "size": 15057,
+      "rules": {
+        "network": 193,
+        "cosmetic": 233
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "mkd-0.txt",
+      "kind": "list",
+      "title": "🇲🇰mk: Macedonian adBlock Filters [MKD-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/DeepSpaceHarbor/Macedonian-adBlock-Filters/master/Filters",
+      "sha256": "c74bd9d5677c718a4be0881977ce01de1ef1c1f4f41e59721b885867c48cf169",
+      "size": 62907,
+      "rules": {
+        "network": 301,
+        "cosmetic": 513
+      },
+      "invalidLines": 2
+    },
+    {
+      "name": "nld-0.txt",
+      "kind": "list",
+      "title": "🇳🇱nl 🇧🇪be: AdGuard Dutch [NLD-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/8.txt",
+      "sha256": "b463fa78d0db5c779658795e577f1e2b9d69ca3481297653f6f6a5a89de90510",
+      "size": 89863,
+      "rules": {
+        "network": 572,
+        "cosmetic": 1382
+      },
+      "invalidLines": 14
+    },
+    {
+      "name": "nor-0.txt",
+      "kind": "list",
+      "title": "🇳🇴no 🇩🇰dk 🇮🇸is: Dandelion Sprouts nordiske filtre [NOR-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/NorwegianList.txt",
+      "sha256": "63c2e33bcb89d6cefaf1eb6369303e313abd8062841a3f6e0b0401108bbd5ee8",
+      "size": 140603,
+      "rules": {
+        "network": 1014,
+        "cosmetic": 1950
+      },
+      "invalidLines": 20
+    },
+    {
+      "name": "plowe-0.txt",
+      "kind": "list",
+      "title": "Peter Lowe’s Ad and tracking server list [plowe-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=1&mimetype=plaintext",
+      "sha256": "b5948c07800bad8e2b3528a5cdc982ae7df1d220cb08ec1d654660a71048b466",
+      "size": 69536,
+      "rules": {
+        "network": 3557,
+        "cosmetic": 0
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "pol-0.txt",
+      "kind": "list",
+      "title": "🇵🇱pl: Oficjalne Polskie Filtry do uBlocka Origin [POL-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/MajkiIT/polish-ads-filter/master/polish-adblock-filters/adblock.txt",
+      "sha256": "eeb6a3a6321870fc7af97b0b54aff16cece702fa5ea5b079f19d85c2aa341a31",
+      "size": 358115,
+      "rules": {
+        "network": 1168,
+        "cosmetic": 5052
+      },
+      "invalidLines": 12
+    },
+    {
+      "name": "pol-3.txt",
+      "kind": "list",
+      "title": "🇵🇱pl: CERT.PL's Warning List [POL-3]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://hole.cert.pl/domains/v2/domains_ublock.txt",
+      "sha256": "ab8cee9371a389289595ee5734b9a4b8cffb9978f36d2997c71779b4454c3549",
+      "size": 582510,
+      "rules": {
+        "network": 22802,
+        "cosmetic": 0
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "popups.txt",
+      "kind": "list",
+      "title": "Popup rules (converted from $popup and $popunder)",
+      "format": "standard",
+      "role": "popup",
+      "tier": "standard",
+      "trusted": false,
+      "sha256": "98229ce595b798c7c2dab1a6b49d232aa65e8c6fe0c5a9cf1fd69832d730bd29",
+      "size": 202130,
+      "rules": {
+        "network": 6084,
+        "cosmetic": 0
+      },
+      "invalidLines": 1
+    },
+    {
+      "name": "resources.json",
+      "kind": "resources",
+      "title": "uBO scriptlets and redirect resources",
+      "sha256": "5289612f165811971457b9aed31f693a3be03ba3eccc3152fd7acfce2a0303dd",
+      "size": 1327158,
+      "count": 224
+    },
+    {
+      "name": "rou-1.txt",
+      "kind": "list",
+      "title": "🇷🇴ro 🇲🇩md: Romanian Ad (ROad) Block List Light [ROU-1]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/tcptomato/ROad-Block/master/road-block-filters-light.txt",
+      "sha256": "b50fada2c4828e5e1512b251d7034cf1e017131d544ff7783d2874183dbd12fc",
+      "size": 89611,
+      "rules": {
+        "network": 584,
+        "cosmetic": 1408
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "rus-0.txt",
+      "kind": "list",
+      "title": "🇷🇺ru 🇺🇦ua 🇺🇿uz 🇰🇿kz: RU AdList [RUS-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/easylist/ruadlist/master/RuAdList-uBO.txt",
+      "sha256": "0dc421c5c7d58f0794877892292d4eeac2c6322bc38594b98f3494f4fec7cbb9",
+      "size": 1317423,
+      "rules": {
+        "network": 17456,
+        "cosmetic": 13904
+      },
+      "invalidLines": 19
+    },
+    {
+      "name": "rus-1.txt",
+      "kind": "list",
+      "title": "🇷🇺ru 🇺🇦ua 🇺🇿uz 🇰🇿kz: RU AdList: Counters [RUS-1]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/easylist/ruadlist/master/cntblock.txt",
+      "sha256": "da815f15d9be914ea7afe89955edf8073669b14a9fb1961d8379a71775bdb4db",
+      "size": 78868,
+      "rules": {
+        "network": 1547,
+        "cosmetic": 273
+      },
+      "invalidLines": 15
+    },
+    {
+      "name": "spa-0.txt",
+      "kind": "list",
+      "title": "🇪🇸es 🇦🇷ar 🇲🇽mx 🇨🇴co: EasyList Spanish [spa-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://easylist-downloads.adblockplus.org/easylistspanish.txt",
+      "sha256": "ee26ccada0f5090fb210e4e788ffad3a416bbf273ecb18a5a4874d6b4b269cce",
+      "size": 122678,
+      "rules": {
+        "network": 630,
+        "cosmetic": 1958
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "spa-1.txt",
+      "kind": "list",
+      "title": "🇪🇸es 🇦🇷ar 🇧🇷br 🇵🇹pt: AdGuard Spanish/Portuguese [spa-1]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/9.txt",
+      "sha256": "bccb2539949159d13f047925e93904ba6d908ad92b7bc651524548c87957353a",
+      "size": 302881,
+      "rules": {
+        "network": 1269,
+        "cosmetic": 4443
+      },
+      "invalidLines": 24
+    },
+    {
+      "name": "svn-0.txt",
+      "kind": "list",
+      "title": "🇸🇮si: Slovenian List [SVN-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/betterwebleon/slovenian-list/master/filters.txt",
+      "sha256": "17b73da99a8575de4b0874a6f607d1ded18d5c56ab6cf974ed0b750995235c87",
+      "size": 17581,
+      "rules": {
+        "network": 122,
+        "cosmetic": 375
+      },
+      "invalidLines": 2
+    },
+    {
+      "name": "swe-1.txt",
+      "kind": "list",
+      "title": "🇸🇪se: Frellwit's Swedish Filter [SWE-1]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/lassekongo83/Frellwits-filter-lists/master/Frellwits-Swedish-Filter.txt",
+      "sha256": "a9a9198774759d56e793f1d52f5328697943e62a436e6edd4e096807eb4f94e0",
+      "size": 230263,
+      "rules": {
+        "network": 1786,
+        "cosmetic": 1977
+      },
+      "invalidLines": 9
+    },
+    {
+      "name": "tha-0.txt",
+      "kind": "list",
+      "title": "🇹🇭th: EasyList Thailand [THA-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/easylist-thailand/easylist-thailand/master/subscription/easylist-thailand.txt",
+      "sha256": "1350f5a48d9f5938a9cf1231e877f4960a5214595a3a95a68b184353e30c90a3",
+      "size": 51728,
+      "rules": {
+        "network": 778,
+        "cosmetic": 742
+      },
+      "invalidLines": 1
+    },
+    {
+      "name": "tur-0.txt",
+      "kind": "list",
+      "title": "🇹🇷tr: AdGuard Turkish [TUR-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/13.txt",
+      "sha256": "c39ad9b5c2256f409497e3f9ee862f7869035fe2c38872198be78800c4c79828",
+      "size": 456713,
+      "rules": {
+        "network": 1674,
+        "cosmetic": 4708
+      },
+      "invalidLines": 461
+    },
+    {
+      "name": "ublock-annoyances.txt",
+      "kind": "list",
+      "title": "uBlock filters – Annoyances [ublock-annoyances]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": true,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/filters/annoyances.txt",
+      "sha256": "cd70a37f6e1bc6fcd2cb5cc979bfb9b3cd6c82087d407dffbf48f4c042fda39c",
+      "size": 260176,
+      "rules": {
+        "network": 284,
+        "cosmetic": 3091
+      },
+      "invalidLines": 46
+    },
+    {
+      "name": "ublock-badware.txt",
+      "kind": "list",
+      "title": "uBlock filters – Badware risks [ublock-badware]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": true,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/filters/badware.txt",
+      "sha256": "eee08b33afca551b2a53abb6308ca222258e27ff04431be5c63b55705b1d4142",
+      "size": 154123,
+      "rules": {
+        "network": 4666,
+        "cosmetic": 141
+      },
+      "invalidLines": 53
+    },
+    {
+      "name": "ublock-cookies-adguard.txt",
+      "kind": "list",
+      "title": "uBlock filters – Cookie Notices [ublock-cookies-adguard]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": true,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/filters/annoyances-cookies.txt",
+      "sha256": "d6965fead1ca7d484082e17151e9d909574374f086dd503afee6b58546999f2e",
+      "size": 313973,
+      "rules": {
+        "network": 62,
+        "cosmetic": 2317
+      },
+      "invalidLines": 2
+    },
+    {
+      "name": "ublock-filters.txt",
+      "kind": "list",
+      "title": "uBlock filters – Ads [ublock-filters]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": true,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/filters/filters.txt",
+      "sha256": "f33c831dff626586444e6b04024eac7d9a543d60e7bfd001cc748086804182ea",
+      "size": 1804304,
+      "rules": {
+        "network": 7718,
+        "cosmetic": 16794
+      },
+      "invalidLines": 361
+    },
+    {
+      "name": "ublock-privacy.txt",
+      "kind": "list",
+      "title": "uBlock filters – Privacy [ublock-privacy]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": true,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/filters/privacy.txt",
+      "sha256": "81ac4dc8003001e544982ff5734762d47a0e7c55691f4fb9b9e20760932df553",
+      "size": 127249,
+      "rules": {
+        "network": 1210,
+        "cosmetic": 355
+      },
+      "invalidLines": 276
+    },
+    {
+      "name": "ublock-quick-fixes.txt",
+      "kind": "list",
+      "title": "uBlock filters – Quick fixes [ublock-quick-fixes]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": true,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/filters/quick-fixes.txt",
+      "sha256": "7c4fe0c4c0ff928cf2f2efb869437e877794b9ef782e2306ff2553389c83f11c",
+      "size": 60628,
+      "rules": {
+        "network": 55,
+        "cosmetic": 255
+      },
+      "invalidLines": 17
+    },
+    {
+      "name": "ublock-unbreak.txt",
+      "kind": "list",
+      "title": "uBlock filters – Unbreak [ublock-unbreak]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": true,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/filters/unbreak.txt",
+      "sha256": "a33b7197d650251436335c86c62aadc78bfc5cbe0a81051c4641a32b4722656f",
+      "size": 160876,
+      "rules": {
+        "network": 1841,
+        "cosmetic": 588
+      },
+      "invalidLines": 94
+    },
+    {
+      "name": "ubo-resource-abuse.txt",
+      "kind": "list",
+      "title": "uBlock filters – Resource abuse",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": true,
+      "source": "https://github.com/uBlockOrigin/uAssets/blob/d45256ec8739ffc882883787ce7ee740e34c19ac/filters/resource-abuse.txt",
+      "sha256": "a0f7fe74340eb6b079d2ba071ad6b08b92cbc98a6b45130d20442116103c079d",
+      "size": 3999,
+      "rules": {
+        "network": 36,
+        "cosmetic": 42
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "ukr-0.txt",
+      "kind": "list",
+      "title": "🇺🇦ua: AdGuard Ukrainian [UKR-0]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://filters.adtidy.org/extension/ublock/filters/23.txt",
+      "sha256": "7d54ee4817b0aadd85e65ab0bcc216405b2f326ffb6ca1be765e6f2fc889d91f",
+      "size": 190601,
+      "rules": {
+        "network": 3359,
+        "cosmetic": 2152
+      },
+      "invalidLines": 22
+    },
+    {
+      "name": "urlhaus-1.txt",
+      "kind": "list",
+      "title": "Online Malicious URL Blocklist [urlhaus-1]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://malware-filter.gitlab.io/urlhaus-filter/urlhaus-filter-vivaldi-online.txt",
+      "sha256": "4039cf3902c0ccae69fa5a3d0a90dabd7c747842e42aad50d18043156c6dcd5a",
+      "size": 12983387,
+      "rules": {
+        "network": 112504,
+        "cosmetic": 0
+      },
+      "invalidLines": 0
+    },
+    {
+      "name": "vie-1.txt",
+      "kind": "list",
+      "title": "🇻🇳vn: ABPVN List [VIE-1]",
+      "format": "standard",
+      "role": "network",
+      "tier": "standard",
+      "trusted": false,
+      "source": "https://raw.githubusercontent.com/abpvn/abpvn/master/filter/abpvn_ublock.txt",
+      "sha256": "3845e073317e05f1c1528fd58dba3d8f6d1edb0c4b7f1302dfd0e0dabf7ae0fa",
+      "size": 50908,
+      "rules": {
+        "network": 409,
+        "cosmetic": 778
+      },
+      "invalidLines": 0
+    }
+  ]
+}

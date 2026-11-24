@@ -24,5 +24,6 @@ packages/
 Thumbs.db
 .DS_Store
 
-# Downloaded by tools/fetch-ads.ps1
-/ads-dl/
+# Downloaded by tools/fetch-ads.ps1. Bundled here so the fork builds with the
+# blocker out of the box; only the temporary staging folder is ignored.
+/ads-dl/.download/

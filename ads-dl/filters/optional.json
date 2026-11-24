@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "version": "2026.11.24.0951",
+  "generated": "2026-11-24T09:51:23.345Z",
+  "packs": [
+    {
+      "id": "adult",
+      "title": "Adult content (HaGeZi NSFW)",
+      "kind": "domains",
+      "file": "optional-adult.txt",
+      "sha256": "246434533b87523f1a66eec890d7e5429f9e8153290bd02fb657b3ae512a3283",
+      "size": 1328121,
+      "domains": 81401,
+      "source": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/nsfw.txt",
+      "license": "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+    }
+  ]
+}
