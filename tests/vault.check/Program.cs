@@ -1,0 +1,2148 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using neat;
+
+// Self-check of the password vault. Plain asserts, no test package: it prints one line per
+// check and exits with 1 if any failed, which fails the CI build.
+//
+// DPAPI only exists on Windows, so everything else runs against TestWrap, a stand-in that
+// seals the key with AES-GCM. The checks on the real DPAPI run only on Windows (the CI runner).
+
+internal static class Program
+{
+    // Few rounds, so that the many password checks below stay quick. One check at the end
+    // runs the real count.
+    private const int Rounds = 1000;
+
+    private static int _ran;
+    private static int _failed;
+
+    private static int Main()
+    {
+        Run("a saved login can be listed and revealed", RoundTrip);
+        Run("an expired or revoked sign-in cannot reveal", Expired);
+        Run("nothing secret is in the file in the clear", NothingInClear);
+        Run("the vault is the same after reopening", Reopen);
+        Run("the same text is sealed differently each time", FreshNonce);
+        Run("a password moved to another entry does not open", SwapBetweenEntries);
+        Run("a user name moved into the password slot does not open", SwapFields);
+        Run("a changed site breaks the entry", ChangedSite);
+        Run("a key that Windows will not open is reported and the file kept", KeyLost);
+        Run("an unreadable or too-new file is reported and kept", BadFiles);
+        Run("a damaged entry does not let the vault be re-protected", DamagedBlocksSwitch);
+        Run("password mode: switch, lock, wrong and right password", PasswordMode);
+        Run("switching mode replaces the data key", KeyIsReplaced);
+        Run("too-short passwords are refused", ShortPassword);
+        Run("wrong passwords are slowed down, then allowed again", Throttle);
+        Run("changing the password", ChangePassword);
+        Run("back to Windows protection", BackToDpapi);
+        Run("a password typed in either Unicode form unlocks", UnicodeForms);
+        Run("update and remove", UpdateRemove);
+        Run("find uses the exact origin only", FindExact);
+        Run("the file is swapped in whole and leaves no temporary file", AtomicWrite);
+        Run("origins are written one way", Origins);
+        Run("a secret is wiped when disposed", SecretWiped);
+        Run("check tests a password without opening or changing anything", CheckPassword);
+        Run("the gate says what protects the vault", GateProtection);
+        Run("the gate asks Windows Hello, and an error is a no", GateHello);
+        Run("the gate opens a password vault with the password", GatePassword);
+        Run("an access lasts from the last use, not from the start", GateSliding);
+        Run("an unused access ends and a password vault is shut again", GateTickAndSignOut);
+        Run("the gate and the vault work together to reveal", GateReveal);
+        Run("lookup tells new, changed and already-saved logins apart", LookupLogins);
+        Run("lookup never opens another site's entries", LookupOrigins);
+        Run("a held login waits, expires and is taken once", CaptureHold);
+        Run("a login that is not worth holding is refused", CaptureRefuse);
+        Run("the user name of a first step is filled into the password step", CaptureTwoStep);
+        Run("offers for one site are spaced out", CaptureCooldown);
+        Run("the never-save list keeps only clean origins", NeverList);
+        Run("has tells whether a site has logins, even while the vault is shut", HasSite);
+        Run("fill gives a login only to the exact origin it was saved for", FillOrigin);
+        Run("fill never hands a login out for a damaged entry or a shut vault", FillSafety);
+        Run("addresses are shown in a form that is hard to fake, with a warning when needed", LookalikeAddresses);
+        Run("the fill script gets the login as data, not as text", FillScriptData);
+        Run("csv is read and written the way browsers do it", CsvRoundTrip);
+        Run("exports from Chrome, Edge and Firefox are read by their column names", ExchangeRead);
+        Run("what is written can be read back, awkward passwords included", ExchangeWrite);
+        Run("import adds new logins, skips saved ones and keeps conflicting ones", ImportLogins);
+        Run("import in one write, and a preview changes nothing", ImportAtomic);
+        Run("export needs a sign-in and gives every login", ExportLogins);
+        Run("one-time-code keys travel with the logins in a file", ExchangeKeys);
+        Run("cards and identities travel in a file of their own", ExchangeItems);
+        Run("a changed password finds the entry it replaces", MatchOldPassword);
+        Run("a change-password form keeps the old password with the held login", CaptureOld);
+        Run("a server that refuses a login is told apart from background calls", LoginNetRefuses);
+        Run("a refused login is dropped, a good answer proves nothing", CaptureAnswered);
+        Run("a suggested password has every kind of character and the right length", PasswordGenerated);
+        Run("one-time codes match the RFC 6238 test values, and odd keys are refused", TotpCodes);
+        Run("a one-time code key is sealed, follows its entry, and gives a code only to its own origin", OtpKeys);
+        Run("a card or identity is cleaned into what is kept, with a sentence for what is wrong", ItemCleaning);
+        Run("cards and identities are sealed, can be changed, and survive a change of protection", SavedItems);
+        Run("the file is version 2 only while it holds what an older NEAT would lose", FileVersion);
+        Run("a card number is checked, and a held card is offered only once it is known to have gone through", CardHeld);
+        Run("a card typed in separate frames is put together when the page above is submitted", CardParts);
+        Run("a site can be taken off the never list", NeverRemove);
+        Run("the vault code never logs", NoLogging);
+        Run("the real number of PBKDF2 rounds works", RealRounds);
+
+        if (OperatingSystem.IsWindows())
+            Run("DPAPI seals and opens, and refuses garbage", RealDpapi);
+        else
+            Console.WriteLine("skip  DPAPI (Windows only)");
+
+        Console.WriteLine();
+        Console.WriteLine($"{_ran - _failed} of {_ran} checks passed.");
+        return _failed == 0 ? 0 : 1;
+    }
+
+    // ---- small harness ----
+
+    private static void Run(string name, Action check)
+    {
+        _ran++;
+        try
+        {
+            check();
+            Console.WriteLine("ok    " + name);
+        }
+        catch (Exception ex)
+        {
+            _failed++;
+            Console.WriteLine("FAIL  " + name);
+            Console.WriteLine("        " + ex.GetType().Name + ": " + ex.Message);
+        }
+    }
+
+    private static void Expect(bool condition, string what)
+    {
+        if (!condition)
+            throw new Exception(what);
+    }
+
+    private static void ExpectThrows<T>(Action action, string what)
+        where T : Exception
+    {
+        try
+        {
+            action();
+        }
+        catch (T)
+        {
+            return;
+        }
+
+        throw new Exception(what);
+    }
+
+    private static string TempFile()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "neat-vault-check-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        return Path.Combine(folder, "vault.json");
+    }
+
+    private static Vault NewVault(string path, IKeyWrap? wrap = null)
+    {
+        return new Vault(path, wrap ?? new TestWrap(Fixed), Rounds);
+    }
+
+    private static readonly byte[] Fixed = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
+
+    private static readonly Access Good = new(TimeSpan.FromMinutes(5));
+
+    private static JsonObject Read(string path)
+    {
+        return JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+    }
+
+    private static void Save(string path, JsonObject json)
+    {
+        File.WriteAllText(path, json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static string RevealText(Vault v, Guid id)
+    {
+        using var secret = v.Reveal(id, Good) ?? throw new Exception("reveal gave nothing");
+        return secret.Text();
+    }
+
+    // ---- checks ----
+
+    private static void RoundTrip()
+    {
+        var v = NewVault(TempFile());
+        Expect(v.Open() == OpenResult.New, "a new vault was expected");
+        Expect(v.IsOpen && v.Mode == VaultMode.Dpapi, "new vaults are open and in Dpapi mode");
+
+        var id = v.Add("https://Example.com:443/login?next=1", "alice@example.com", "s3cret pass \u00e9\u00e8");
+        var list = v.List();
+
+        Expect(list.Count == 1, "one entry");
+        Expect(list[0].Id == id && list[0].Site == "https://example.com", "site is kept as its origin");
+        Expect(list[0].User == "alice@example.com" && !list[0].Damaged, "user name comes back");
+        Expect(RevealText(v, id) == "s3cret pass \u00e9\u00e8", "password comes back, accents included");
+    }
+
+    private static void Expired()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        var id = v.Add("https://a.example", "u", "p");
+
+        var now = DateTime.UtcNow;
+        var access = new Access(TimeSpan.FromMinutes(2), () => now);
+        Expect(access.Valid, "valid at first");
+
+        now = now.AddMinutes(3);
+        Expect(!access.Valid, "expired after its time");
+        ExpectThrows<UnauthorizedAccessException>(() => v.Reveal(id, access), "expired access must be refused");
+
+        var revoked = new Access(TimeSpan.FromMinutes(5));
+        revoked.Revoke();
+        ExpectThrows<UnauthorizedAccessException>(() => v.Reveal(id, revoked), "revoked access must be refused");
+    }
+
+    private static void NothingInClear()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        v.Add("https://example.com", "very-private-user", "very-private-password");
+
+        var text = File.ReadAllText(path);
+        Expect(!text.Contains("very-private-user"), "the user name is in the file in the clear");
+        Expect(!text.Contains("very-private-password"), "the password is in the file in the clear");
+        Expect(!text.Contains(Convert.ToBase64String(Encoding.UTF8.GetBytes("very-private-password"))), "the password is in the file as plain base64");
+        Expect(text.Contains("https://example.com"), "the site is kept in the clear on purpose, to look entries up");
+    }
+
+    private static void Reopen()
+    {
+        var path = TempFile();
+        var first = NewVault(path);
+        first.Open();
+        var id = first.Add("https://example.com", "bob", "hunter2 hunter2");
+
+        var second = NewVault(path);
+        Expect(second.Open() == OpenResult.Ready, "an existing Dpapi vault opens by itself");
+        Expect(second.List().Single().User == "bob", "entry is still there");
+        Expect(RevealText(second, id) == "hunter2 hunter2", "password is still there");
+    }
+
+    private static void FreshNonce()
+    {
+        // The tag depends on which entry a value belongs to, so comparing whole blocks would
+        // hide a repeated nonce. Compare the nonces themselves, over many identical values.
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+
+        for (var i = 0; i < 30; i++)
+            v.Add("https://example.com", "same", "same");
+
+        var nonces = new HashSet<string>();
+        var count = 0;
+        foreach (var row in Read(path)["Logins"]!.AsArray())
+        {
+            foreach (var field in new[] { "User", "Pass" })
+            {
+                var blob = Convert.FromBase64String(row![field]!.GetValue<string>());
+                nonces.Add(Convert.ToHexString(blob.AsSpan(0, Seal.NonceBytes)));
+                count++;
+            }
+        }
+
+        Expect(count == 60, "sixty sealed values were expected");
+        Expect(nonces.Count == count, "a nonce was used twice");
+
+        // Sealing the same entry again (an update) must not reuse the nonce either.
+        var id = v.List()[0].Id;
+        var before = Convert.FromBase64String(Read(path)["Logins"]!.AsArray().First(r => r!["Id"]!.GetValue<string>() == id.ToString("N"))!["Pass"]!.GetValue<string>());
+        v.Update(id, "https://example.com", "same", "same");
+        var after = Convert.FromBase64String(Read(path)["Logins"]!.AsArray().First(r => r!["Id"]!.GetValue<string>() == id.ToString("N"))!["Pass"]!.GetValue<string>());
+        Expect(!before.AsSpan(0, Seal.NonceBytes).SequenceEqual(after.AsSpan(0, Seal.NonceBytes)), "an update reused the nonce");
+    }
+
+    private static void SwapBetweenEntries()
+    {
+        // Two cases: entries of different sites, and entries of the SAME site, where only the
+        // entry id tells them apart.
+        foreach (var sites in new[] { ("https://one.example", "https://two.example"), ("https://same.example", "https://same.example") })
+        {
+            var path = TempFile();
+            var v = NewVault(path);
+            v.Open();
+            var a = v.Add(sites.Item1, "a", "password-of-a");
+            var b = v.Add(sites.Item2, "b", "password-of-b");
+
+            // Move the sealed password of the first entry into the second.
+            var json = Read(path);
+            var rows = json["Logins"]!.AsArray();
+            var first = rows.Single(r => r!["Id"]!.GetValue<string>() == a.ToString("N"))!;
+            var second = rows.Single(r => r!["Id"]!.GetValue<string>() == b.ToString("N"))!;
+            second["Pass"] = first["Pass"]!.GetValue<string>();
+            Save(path, json);
+
+            var again = NewVault(path);
+            again.Open();
+            Expect(again.Reveal(b, Good) is null, $"the moved password opened in the other entry ({sites.Item1} / {sites.Item2})");
+            Expect(RevealText(again, a) == "password-of-a", "the untouched entry still opens");
+        }
+    }
+
+    private static void SwapFields()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        var id = v.Add("https://example.com", "the-user", "the-password");
+
+        var json = Read(path);
+        var row = json["Logins"]![0]!;
+        var user = row["User"]!.GetValue<string>();
+        row["User"] = row["Pass"]!.GetValue<string>();
+        row["Pass"] = user;
+        Save(path, json);
+
+        var again = NewVault(path);
+        again.Open();
+        Expect(again.List().Single().Damaged, "swapped fields should show as damaged");
+        Expect(again.Reveal(id, Good) is null, "swapped fields should not open");
+    }
+
+    private static void ChangedSite()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        var id = v.Add("https://bank.example", "u", "p");
+
+        // Someone edits the file so the entry looks like it belongs to another site.
+        var json = Read(path);
+        json["Logins"]![0]!["Site"] = "https://evil.example";
+        Save(path, json);
+
+        var again = NewVault(path);
+        again.Open();
+        Expect(again.Reveal(id, Good) is null, "an entry moved to another site opened");
+        Expect(again.List().Single().Damaged, "it should show as damaged");
+    }
+
+    private static void KeyLost()
+    {
+        var path = TempFile();
+        var mine = NewVault(path);
+        mine.Open();
+        mine.Add("https://example.com", "u", "p");
+        var before = File.ReadAllBytes(path);
+
+        // Another Windows user cannot open the key.
+        var other = NewVault(path, new TestWrap(RandomNumberGenerator.GetBytes(32)));
+        Expect(other.Open() == OpenResult.KeyLost, "a key from another user must not open");
+        Expect(!other.IsOpen, "the vault must stay shut");
+        ExpectThrows<InvalidOperationException>(() => other.List(), "listing a shut vault must fail");
+        ExpectThrows<InvalidOperationException>(() => other.Add("https://x.example", "u", "p"), "adding to a shut vault must fail");
+        Expect(other.Unlock() == VaultResult.KeyLost, "unlock says the key is lost");
+        Expect(before.SequenceEqual(File.ReadAllBytes(path)), "the file must be left untouched");
+    }
+
+    private static void BadFiles()
+    {
+        var path = TempFile();
+        File.WriteAllText(path, "this is not json {{{");
+        var before = File.ReadAllBytes(path);
+        var v = NewVault(path);
+        Expect(v.Open() == OpenResult.Unreadable, "garbage must be reported");
+        Expect(before.SequenceEqual(File.ReadAllBytes(path)), "garbage must not be overwritten");
+
+        var future = TempFile();
+        File.WriteAllText(future, "{ \"Version\": 99, \"Mode\": \"dpapi\", \"Key\": \"AAAA\", \"Logins\": [] }");
+        var futureBefore = File.ReadAllBytes(future);
+        Expect(NewVault(future).Open() == OpenResult.TooNew, "a newer file must be reported");
+        Expect(futureBefore.SequenceEqual(File.ReadAllBytes(future)), "a newer file must not be downgraded");
+
+        var odd = TempFile();
+        File.WriteAllText(odd, "{ \"Version\": 1, \"Mode\": \"nonsense\", \"Key\": \"AAAA\", \"Logins\": [] }");
+        Expect(NewVault(odd).Open() == OpenResult.Unreadable, "an unknown mode is unreadable");
+    }
+
+    private static void DamagedBlocksSwitch()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        v.Add("https://example.com", "u", "p");
+
+        var json = Read(path);
+        json["Logins"]![0]!["Site"] = "https://other.example";
+        Save(path, json);
+
+        var again = NewVault(path);
+        again.Open();
+        var before = File.ReadAllBytes(path);
+        Expect(again.UsePassword("a long enough password".AsSpan()) == VaultResult.Damaged, "a damaged entry must block the switch");
+        Expect(before.SequenceEqual(File.ReadAllBytes(path)), "a refused switch must change nothing");
+        Expect(again.Mode == VaultMode.Dpapi, "still in Dpapi mode");
+    }
+
+    private static void PasswordMode()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        var id = v.Add("https://example.com", "u", "the-secret");
+
+        Expect(v.UsePassword("correct horse battery".AsSpan()) == VaultResult.Ok, "switch to password mode");
+        Expect(v.Mode == VaultMode.Password && v.IsOpen, "password mode, still open this session");
+        Expect(RevealText(v, id) == "the-secret", "entries survive the switch");
+
+        var json = Read(path);
+        Expect(json["Mode"]!.GetValue<string>() == "password", "file says password");
+        Expect(json["Salt"] is not null && json["Iterations"]!.GetValue<int>() == Rounds, "salt and rounds are stored");
+
+        // A new session: the key is not opened by Windows any more.
+        var again = NewVault(path);
+        Expect(again.Open() == OpenResult.NeedsPassword, "needs the password");
+        Expect(!again.IsOpen, "shut until unlocked");
+        Expect(again.Unlock("wrong wrong wrong".AsSpan()) == VaultResult.Wrong, "wrong password");
+        Expect(!again.IsOpen, "still shut after a wrong password");
+        Expect(again.Unlock("correct horse battery".AsSpan()) == VaultResult.Ok, "right password");
+        Expect(RevealText(again, id) == "the-secret", "entry opens after unlock");
+
+        // Even with the same Windows protection available, it does not open without the password.
+        var anyKey = NewVault(path, new TestWrap(Fixed));
+        anyKey.Open();
+        Expect(!anyKey.IsOpen, "Windows protection alone must not open a password vault");
+
+        again.Lock();
+        Expect(!again.IsOpen, "lock forgets the key");
+        ExpectThrows<InvalidOperationException>(() => again.List(), "a locked vault cannot be listed");
+        Expect(again.Unlock("correct horse battery".AsSpan()) == VaultResult.Ok, "unlock again after lock");
+    }
+
+    private static void KeyIsReplaced()
+    {
+        var path = TempFile();
+        var wrap = new TestWrap(Fixed);
+        var v = NewVault(path, wrap);
+        v.Open();
+        var id = v.Add("https://example.com", "u", "the-secret");
+
+        // What an old backup of the file would hold: the sealed old data key and the old entry.
+        var oldFile = Read(path);
+        var oldKey = wrap.Unprotect(Convert.FromBase64String(oldFile["Key"]!.GetValue<string>()))!;
+        var oldPass = oldFile["Logins"]![0]!["Pass"]!.GetValue<string>();
+
+        Expect(v.UsePassword("correct horse battery".AsSpan()) == VaultResult.Ok, "switch");
+        var newPass = Read(path)["Logins"]![0]!["Pass"]!.GetValue<string>();
+        Expect(newPass != oldPass, "the entry must be sealed again with the new key");
+
+        // The old key, which Windows protection could still give to a program running as the
+        // user, must not open what is in the file now.
+        var aad = Aad.Field(id, "https://example.com", "pass");
+        Expect(Seal.Decrypt(oldKey, Convert.FromBase64String(newPass), aad) is null, "the old data key opens the new file");
+        Expect(Seal.Decrypt(oldKey, Convert.FromBase64String(oldPass), aad) is not null, "(sanity) the old key opens the old copy");
+    }
+
+    private static void ShortPassword()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        Expect(v.UsePassword("short".AsSpan()) == VaultResult.TooShort, "too short");
+        Expect(v.Mode == VaultMode.Dpapi, "nothing changed");
+
+        Expect(v.UsePassword("long enough password".AsSpan()) == VaultResult.Ok, "long enough");
+        Expect(v.ChangePassword("long enough password".AsSpan(), "tiny".AsSpan()) == VaultResult.TooShort, "change to a short one");
+    }
+
+    private static void Throttle()
+    {
+        var path = TempFile();
+        var first = NewVault(path);
+        first.Open();
+        first.UsePassword("the right password".AsSpan());
+
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var v = NewVault(path);
+        v.Clock = () => now;
+        v.Open();
+
+        for (var i = 0; i < 3; i++)
+            Expect(v.Unlock("wrong password 1".AsSpan()) == VaultResult.Wrong, "the first three wrong tries cost nothing");
+
+        Expect(v.RetryAfter == TimeSpan.Zero, "no wait yet");
+        Expect(v.Unlock("wrong password 1".AsSpan()) == VaultResult.Wrong, "fourth wrong try");
+        Expect(v.RetryAfter > TimeSpan.Zero, "now there is a wait");
+
+        // Even the right password is not tried during the wait.
+        Expect(v.Unlock("the right password".AsSpan()) == VaultResult.Wait, "waiting");
+
+        now = now.AddSeconds(3);
+        Expect(v.RetryAfter == TimeSpan.Zero, "the wait is over");
+        Expect(v.Unlock("the right password".AsSpan()) == VaultResult.Ok, "right password after the wait");
+
+        // The wait grows and is capped.
+        var w = NewVault(path);
+        w.Clock = () => now;
+        w.Open();
+        var longest = TimeSpan.Zero;
+        for (var i = 0; i < 20; i++)
+        {
+            now = now.AddMinutes(10);
+            w.Unlock("wrong password 2".AsSpan());
+            if (w.RetryAfter > longest)
+                longest = w.RetryAfter;
+        }
+
+        Expect(longest <= TimeSpan.FromSeconds(60), "the wait must not pass a minute");
+    }
+
+    private static void ChangePassword()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        var id = v.Add("https://example.com", "u", "the-secret");
+        v.UsePassword("old password here".AsSpan());
+
+        Expect(v.ChangePassword("not the old one".AsSpan(), "brand new password".AsSpan()) == VaultResult.Wrong, "the current password is checked");
+        Expect(v.ChangePassword("old password here".AsSpan(), "brand new password".AsSpan()) == VaultResult.Ok, "change");
+        Expect(RevealText(v, id) == "the-secret", "entries survive the change");
+
+        var again = NewVault(path);
+        again.Open();
+        Expect(again.Unlock("old password here".AsSpan()) == VaultResult.Wrong, "the old password no longer works");
+        Expect(again.Unlock("brand new password".AsSpan()) == VaultResult.Ok, "the new password works");
+        Expect(RevealText(again, id) == "the-secret", "entry opens");
+
+        var dpapi = NewVault(TempFile());
+        dpapi.Open();
+        Expect(dpapi.ChangePassword("x".AsSpan(), "another password".AsSpan()) == VaultResult.Unavailable, "no password to change in Dpapi mode");
+    }
+
+    private static void BackToDpapi()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        var id = v.Add("https://example.com", "u", "the-secret");
+        v.UsePassword("a password to leave".AsSpan());
+
+        Expect(v.UseDpapi() == VaultResult.Ok, "back to Windows protection");
+        var json = Read(path);
+        Expect(json["Mode"]!.GetValue<string>() == "dpapi" && json["Salt"] is null, "file says dpapi and keeps no salt");
+
+        var again = NewVault(path);
+        Expect(again.Open() == OpenResult.Ready, "opens by itself again");
+        Expect(RevealText(again, id) == "the-secret", "entry opens");
+
+        var locked = NewVault(path);
+        Expect(locked.UseDpapi() == VaultResult.Unavailable, "needs an open vault");
+    }
+
+    private static void UnicodeForms()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        v.UsePassword("Vi\u1ec7t Nam 2026".AsSpan());   // precomposed: one character for the letter with its marks
+
+        var typedApart = "Vie\u0323\u0302t Nam 2026";    // letter, then separate marks
+        var again = NewVault(path);
+        again.Open();
+        Expect(again.Unlock(typedApart.AsSpan()) == VaultResult.Ok, "the other form of the same password must unlock");
+    }
+
+    private static void UpdateRemove()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        var id = v.Add("https://one.example", "old-user", "old-pass");
+
+        Expect(v.Update(id, "https://two.example/path", "new-user", null), "update with the password kept");
+        Expect(v.List().Single().Site == "https://two.example" && v.List().Single().User == "new-user", "site and user changed");
+        Expect(RevealText(v, id) == "old-pass", "a null password keeps the old one, even after the site changed");
+
+        Expect(v.Update(id, "https://two.example", "new-user", "new-pass"), "update with a new password");
+        Expect(RevealText(v, id) == "new-pass", "new password");
+
+        Expect(!v.Update(Guid.NewGuid(), "https://x.example", "u", "p"), "unknown id");
+        ExpectThrows<ArgumentException>(() => v.Update(id, "not an address", "u", "p"), "site must be a web address");
+        ExpectThrows<ArgumentException>(() => v.Add("javascript:alert(1)", "u", "p"), "javascript: is not a site");
+
+        Expect(v.Remove(id), "remove");
+        Expect(!v.Remove(id), "remove twice");
+        Expect(v.List().Count == 0, "empty again");
+        Expect(v.Reveal(id, Good) is null, "revealing a removed entry gives nothing");
+
+        var reopened = NewVault(path);
+        reopened.Open();
+        Expect(reopened.List().Count == 0, "the removal was written");
+    }
+
+    private static void FindExact()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        v.Add("https://example.com", "a", "p");
+        v.Add("https://example.com", "b", "p");
+        v.Add("http://example.com", "plain", "p");
+        v.Add("https://example.com:8443", "port", "p");
+        v.Add("https://login.example.com", "sub", "p");
+
+        Expect(v.Find("https://example.com/some/page?x=1").Select(i => i.User).SequenceEqual(new[] { "a", "b" }), "same origin only");
+        Expect(v.Find("http://example.com").Single().User == "plain", "http is not https");
+        Expect(v.Find("https://example.com:8443/").Single().User == "port", "the port counts");
+        Expect(v.Find("https://example.com.evil.example").Count == 0, "a look-alike host");
+        Expect(v.Find("https://evil.example/https://example.com").Count == 0, "a look-alike path");
+        Expect(v.Find("https://xn--exmple-cua.com").Count == 0, "punycode look-alike");
+        Expect(v.Find("not an address").Count == 0, "not an address");
+    }
+
+    private static void AtomicWrite()
+    {
+        var path = TempFile();
+
+        // A leftover from a crash in the middle of an earlier write.
+        File.WriteAllText(path + ".tmp", "half a file");
+
+        var v = NewVault(path);
+        v.Open();
+        v.Add("https://example.com", "u", "p");
+        v.UsePassword("a long enough password".AsSpan());
+
+        Expect(!File.Exists(path + ".tmp"), "no temporary file is left behind");
+        Expect(JsonNode.Parse(File.ReadAllText(path)) is not null, "the file is whole");
+
+        // A write that cannot happen (the folder is a file) throws and changes nothing in memory.
+        var blocked = TempFile();
+        var folder = Path.GetDirectoryName(blocked)!;
+        var w = NewVault(blocked);
+        w.Open();
+        var id = w.Add("https://example.com", "u", "p");
+        Directory.Delete(folder, true);
+        File.WriteAllText(folder, "now a file, not a folder");
+
+        try
+        {
+            ExpectThrows<IOException>(() => w.Add("https://other.example", "u2", "p2"), "writing into a missing folder throws");
+            Expect(w.List().Count == 1 && w.List()[0].Id == id, "a failed write must not leave the new entry in memory");
+        }
+        finally
+        {
+            File.Delete(folder);
+        }
+    }
+
+    private static void Origins()
+    {
+        var cases = new (string? Url, string? Origin)[]
+        {
+            ("https://Example.com:443/a?b=c#d", "https://example.com"),
+            ("http://example.com:80/", "http://example.com"),
+            ("http://example.com:8080/x", "http://example.com:8080"),
+            ("https://example.com./", "https://example.com"),
+            ("  https://example.com/  ", "https://example.com"),
+            ("http://user:pw@example.com/", "http://example.com"),
+            ("https://b\u00fccher.de/", "https://xn--bcher-kva.de"),
+            ("https://[::1]:3000/x", "https://[::1]:3000"),
+            ("https://192.168.0.1/", "https://192.168.0.1"),
+            ("ftp://example.com/", null),
+            ("javascript:alert(1)", null),
+            ("data:text/html,hi", null),
+            ("file:///C:/x", null),
+            ("about:blank", null),
+            ("example.com", null),
+            ("", null),
+            (null, null),
+        };
+
+        foreach (var (url, expected) in cases)
+        {
+            var got = Origin.Of(url);
+            Expect(got == expected, $"Origin.Of({url ?? "null"}) gave {got ?? "null"}, expected {expected ?? "null"}");
+        }
+    }
+
+    private static void SecretWiped()
+    {
+        var bytes = new byte[] { 1, 2, 3, 4 };
+        var secret = new Secret(bytes);
+        Expect(secret.Bytes.Length == 4, "readable before dispose");
+
+        secret.Dispose();
+        Expect(bytes.All(b => b == 0), "the bytes are overwritten");
+        ExpectThrows<ObjectDisposedException>(() => _ = secret.Bytes.Length, "a disposed secret cannot be read");
+        secret.Dispose();
+    }
+
+    private static void NoLogging()
+    {
+        // The rule that no secret ever reaches a log is kept by keeping every kind of output
+        // out of this folder, so there is nothing to forget to check. Comments are skipped.
+        var folder = FindVaultSource();
+        var banned = new[] { "Log.", "Console.", "Debug.", "Trace.", "Debugger.", "EventLog", "Print(" };
+        var files = Directory.GetFiles(folder, "*.cs");
+        Expect(files.Length >= 4, "the vault source files were not found in " + folder);
+
+        foreach (var file in files)
+        {
+            var lines = File.ReadAllLines(file);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i].TrimStart();
+                if (line.StartsWith("//"))
+                    continue;
+
+                foreach (var word in banned)
+                    Expect(!line.Contains(word), $"{Path.GetFileName(file)}:{i + 1} uses {word}");
+            }
+        }
+    }
+
+    private static string FindVaultSource()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName, "src", "neat", "vault");
+            if (Directory.Exists(candidate))
+                return candidate;
+
+            dir = dir.Parent;
+        }
+
+        throw new Exception("src/neat/vault not found above " + AppContext.BaseDirectory);
+    }
+
+    private static void RealRounds()
+    {
+        var path = TempFile();
+        var v = new Vault(path, new TestWrap(Fixed), Vault.DefaultIterations);
+        v.Open();
+        var id = v.Add("https://example.com", "u", "the-secret");
+
+        var clock = Stopwatch.StartNew();
+        Expect(v.UsePassword("a long enough password".AsSpan()) == VaultResult.Ok, "switch with the real round count");
+        var one = clock.ElapsedMilliseconds;
+        Expect(Read(path)["Iterations"]!.GetValue<int>() == 600_000, "600,000 rounds are written");
+
+        var again = new Vault(path, new TestWrap(Fixed), Vault.DefaultIterations);
+        again.Open();
+        Expect(again.Unlock("a long enough password".AsSpan()) == VaultResult.Ok, "unlock with the real round count");
+        Expect(RevealText(again, id) == "the-secret", "entry opens");
+
+        Console.WriteLine($"        (one 600,000-round key took about {one} ms here)");
+    }
+
+    private static void RealDpapi()
+    {
+        var wrap = new Dpapi();
+        var key = RandomNumberGenerator.GetBytes(32);
+
+        var sealedKey = wrap.Protect(key);
+        Expect(!sealedKey.SequenceEqual(key), "the sealed key must differ from the key");
+        Expect(wrap.Unprotect(sealedKey)!.SequenceEqual(key), "round trip");
+        Expect(wrap.Unprotect(RandomNumberGenerator.GetBytes(64)) is null, "garbage must not open");
+
+        var tampered = (byte[])sealedKey.Clone();
+        tampered[^1] ^= 0xFF;
+        Expect(wrap.Unprotect(tampered) is null, "a changed block must not open");
+
+        // And the whole vault on the real thing.
+        var path = TempFile();
+        var v = new Vault(path, new Dpapi(), Rounds);
+        Expect(v.Open() == OpenResult.New, "new vault on real DPAPI");
+        var id = v.Add("https://example.com", "u", "p");
+
+        var again = new Vault(path, new Dpapi(), Rounds);
+        Expect(again.Open() == OpenResult.Ready, "reopen on real DPAPI");
+        Expect(RevealText(again, id) == "p", "entry opens on real DPAPI");
+    }
+
+    // ---- the gate ----
+
+    private static (Vault Vault, string Path) PasswordVault(string password = "the right password")
+    {
+        var path = TempFile();
+        var first = NewVault(path);
+        first.Open();
+        first.Add("https://example.com", "u", "the-secret");
+        first.UsePassword(password.AsSpan());
+
+        // A new session: shut until unlocked.
+        var v = NewVault(path);
+        v.Open();
+        return (v, path);
+    }
+
+    private static void CheckPassword()
+    {
+        var (v, _) = PasswordVault();
+        Expect(!v.IsOpen, "the vault starts shut");
+
+        Expect(v.Check("the right password".AsSpan()) == VaultResult.Ok, "the right password checks out");
+        Expect(!v.IsOpen, "checking must not open the vault");
+        Expect(v.Check("a wrong password".AsSpan()) == VaultResult.Wrong, "a wrong password does not");
+
+        // Wrong tries count, and the wait applies to Check as well as to Unlock.
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        v.Clock = () => now;
+        for (var i = 0; i < 4; i++)
+            v.Check("a wrong password".AsSpan());
+
+        Expect(v.Check("the right password".AsSpan()) == VaultResult.Wait, "the wait applies to Check");
+        now = now.AddMinutes(5);
+        Expect(v.Check("the right password".AsSpan()) == VaultResult.Ok, "Check works again after the wait");
+
+        var dpapi = NewVault(TempFile());
+        dpapi.Open();
+        Expect(dpapi.Check("anything at all".AsSpan()) == VaultResult.Unavailable, "no password to check in Dpapi mode");
+        Expect(NewVault(TempFile()).Check("anything at all".AsSpan()) == VaultResult.Unavailable, "nothing to check before the vault is read");
+    }
+
+    private static void GateProtection()
+    {
+        var dpapi = NewVault(TempFile());
+        dpapi.Open();
+
+        var hello = new FakeHello();
+        var gate = new Gate(dpapi, hello);
+
+        foreach (var (state, expected) in new[]
+        {
+            (HelloState.Ready, Protection.Hello),
+            (HelloState.NotSetUp, Protection.None),
+            (HelloState.Blocked, Protection.None),
+            (HelloState.NoDevice, Protection.None),
+            (HelloState.Unknown, Protection.None),
+        })
+        {
+            hello.State = state;
+            Expect(gate.ProtectionAsync().Result == expected, $"Windows protection with Hello {state} should be {expected}");
+            Expect(gate.Hello == state, "the gate keeps what Hello said");
+        }
+
+        // A password vault is protected by the password whatever Hello says.
+        var (pw, _) = PasswordVault();
+        hello.State = HelloState.NoDevice;
+        Expect(new Gate(pw, hello).ProtectionAsync().Result == Protection.Password, "password vault, no Hello");
+        hello.State = HelloState.Ready;
+        Expect(new Gate(pw, hello).ProtectionAsync().Result == Protection.Password, "password vault, Hello ready");
+
+        // Asking Hello fails: not usable, and no exception reaches the page.
+        hello.ThrowOnState = true;
+        Expect(gate.ProtectionAsync().Result == Protection.None, "a failing Hello check is not usable");
+        Expect(gate.Hello == HelloState.Unknown, "and is reported as unknown");
+
+        // A vault that was never read has nothing protecting it.
+        hello.ThrowOnState = false;
+        hello.State = HelloState.Ready;
+        Expect(new Gate(NewVault(TempFile()), hello).ProtectionAsync().Result == Protection.None, "an unread vault");
+    }
+
+    private static void GateHello()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        var hello = new FakeHello { State = HelloState.Ready, Answer = true };
+        var gate = new Gate(v, hello);
+
+        Expect(gate.Current is null, "no access at the start");
+        Expect(gate.SignInAsync("Show the password for example.com").Result, "a yes from Hello opens an access");
+        Expect(gate.Current is { Valid: true }, "and it is valid");
+        Expect(hello.LastMessage == "Show the password for example.com", "Hello is shown the message");
+
+        gate.SignOut();
+        Expect(gate.Current is null, "sign out ends it");
+
+        hello.Answer = false;
+        Expect(!gate.SignInAsync("x").Result && gate.Current is null, "a no gives nothing");
+
+        hello.ThrowOnAsk = true;
+        Expect(!gate.SignInAsync("x").Result && gate.Current is null, "an error is a no, never a yes");
+
+        // Hello is for Windows protection only, and only with the vault open.
+        hello.ThrowOnAsk = false;
+        hello.Answer = true;
+        var (pw, _) = PasswordVault();
+        Expect(!new Gate(pw, hello).SignInAsync("x").Result, "a shut password vault is not opened by Hello");
+
+        // Even open (the password was typed this session), Hello is not the proof for a password vault.
+        pw.Unlock("the right password".AsSpan());
+        Expect(pw.IsOpen, "(sanity) the password vault is open");
+        Expect(!new Gate(pw, hello).SignInAsync("x").Result, "an open password vault is not given access by Hello");
+
+        // A vault whose key Windows will not open is not open, so there is nothing to give access to.
+        var path = TempFile();
+        NewVault(path).Open();
+        var shut = NewVault(path, new TestWrap(RandomNumberGenerator.GetBytes(32)));
+        shut.Open();
+        Expect(!shut.IsOpen, "(sanity) the vault is shut");
+        Expect(!new Gate(shut, hello).SignInAsync("x").Result, "a vault that is not open gives no access");
+    }
+
+    private static void GatePassword()
+    {
+        var (v, _) = PasswordVault();
+        var gate = new Gate(v, new FakeHello());
+
+        Expect(gate.SignIn("not the password".AsSpan()) == VaultResult.Wrong, "wrong password");
+        Expect(gate.Current is null && !v.IsOpen, "a wrong password gives no access and leaves the vault shut");
+
+        Expect(gate.SignIn("the right password".AsSpan()) == VaultResult.Ok, "right password");
+        Expect(gate.Current is { Valid: true } && v.IsOpen, "an access, and the vault is open");
+
+        // Open already: the password is only checked.
+        gate.SignOut();
+        Expect(!v.IsOpen, "sign out shuts a password vault");
+        Expect(gate.SignIn("the right password".AsSpan()) == VaultResult.Ok, "sign in again");
+
+        var dpapi = NewVault(TempFile());
+        dpapi.Open();
+        Expect(new Gate(dpapi, new FakeHello()).SignIn("x".AsSpan()) == VaultResult.Unavailable, "no password for a Windows-protected vault");
+    }
+
+    private static void GateSliding()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var gate = new Gate(v, new FakeHello { State = HelloState.Ready, Answer = true }) { Clock = () => now };
+
+        gate.SignInAsync("x").Wait();
+        var access = gate.Current!;
+
+        now = now.AddMinutes(2);
+        Expect(access.Valid, "still valid after 2 minutes");
+        gate.Touch();
+
+        now = now.AddMinutes(2);
+        Expect(access.Valid, "4 minutes after the start but 2 after the last use: still valid");
+
+        now = now.AddMinutes(1.5);
+        Expect(!access.Valid && gate.Current is null, "3 minutes after the last use it has run out");
+
+        // A dead access stays dead.
+        gate.Touch();
+        Expect(!access.Valid, "touching a dead access does not bring it back");
+    }
+
+    private static void GateTickAndSignOut()
+    {
+        // Password vault: the end of the access shuts the vault.
+        var (v, _) = PasswordVault();
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var gate = new Gate(v, new FakeHello()) { Clock = () => now };
+        gate.SignIn("the right password".AsSpan());
+
+        Expect(!gate.Tick(), "nothing to end while the access is valid");
+        now = now.AddMinutes(4);
+        Expect(gate.Tick(), "the access has run out");
+        Expect(!v.IsOpen && gate.Current is null, "the vault is shut and the access is gone");
+        Expect(!gate.Tick(), "it says so only once");
+
+        // Windows-protected vault: the vault stays open, only the access ends.
+        var dpapi = NewVault(TempFile());
+        dpapi.Open();
+        var id = dpapi.Add("https://example.com", "u", "p");
+        var clock = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var g2 = new Gate(dpapi, new FakeHello { State = HelloState.Ready, Answer = true }) { Clock = () => clock };
+        g2.SignInAsync("x").Wait();
+        var old = g2.Current!;
+
+        clock = clock.AddMinutes(4);
+        Expect(g2.Tick() && dpapi.IsOpen, "the access ends, the Windows-protected vault stays open");
+        ExpectThrows<UnauthorizedAccessException>(() => dpapi.Reveal(id, old), "the old access no longer reveals");
+
+        g2.SignInAsync("x").Wait();
+        var fresh = g2.Current!;
+        g2.SignOut();
+        ExpectThrows<UnauthorizedAccessException>(() => dpapi.Reveal(id, fresh), "sign out ends the access at once");
+        Expect(dpapi.IsOpen, "sign out leaves a Windows-protected vault open");
+    }
+
+    private static void GateReveal()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        var id = v.Add("https://example.com", "u", "the-secret");
+
+        var gate = new Gate(v, new FakeHello { State = HelloState.Ready, Answer = true });
+        Expect(gate.Current is null, "no access, nothing to reveal with");
+        gate.SignInAsync("x").Wait();
+
+        using (var secret = v.Reveal(id, gate.Current!))
+            Expect(secret!.Text() == "the-secret", "revealed through the gate's access");
+
+        // Setting a password: the person just typed it twice, so an access is granted.
+        Expect(v.UsePassword("a fresh password".AsSpan()) == VaultResult.Ok, "switch to a password");
+        gate.SignOut();
+        Expect(!v.IsOpen, "the password vault is shut by sign out");
+        gate.SignIn("a fresh password".AsSpan());
+        using (var secret = v.Reveal(id, gate.Current!))
+            Expect(secret!.Text() == "the-secret", "revealed after the password");
+
+        var granted = NewVault(TempFile());
+        granted.Open();
+        var g3 = new Gate(granted, new FakeHello());
+        g3.Grant();
+        Expect(g3.Current is { Valid: true }, "grant starts an access");
+    }
+
+    // ---- capturing logins ----
+
+    private static void LookupLogins()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        var id = v.Add("https://example.com", "alice", "correct-password");
+
+        var same = v.Lookup("https://example.com/login", "alice", "correct-password");
+        Expect(same.Id == id && same.SamePassword, "the saved login is recognised");
+
+        var changed = v.Lookup("https://example.com/", "alice", "a-new-password");
+        Expect(changed.Id == id && !changed.SamePassword, "same user, other password: offer to update that entry");
+
+        var other = v.Lookup("https://example.com/", "bob", "correct-password");
+        Expect(other.Id is null && !other.SamePassword, "another user name is a new login");
+
+        Expect(v.Lookup("https://example.com", "ALICE", "correct-password").Id is null, "user names are matched exactly");
+        Expect(v.Lookup("https://example.com", "alice", "Correct-password").Id == id && !v.Lookup("https://example.com", "alice", "Correct-password").SamePassword, "passwords are matched exactly");
+
+        // Two entries for one user (an old and a new password): the one that matches wins.
+        var second = v.Add("https://example.com", "alice", "second-password");
+        Expect(v.Lookup("https://example.com", "alice", "second-password").Id == second, "the matching entry is found among several");
+        Expect(v.Lookup("https://example.com", "alice", "second-password").SamePassword, "and is the same password");
+
+        // An empty user name is a user name too.
+        v.Add("https://example.com", "", "no-name-password");
+        Expect(v.Lookup("https://example.com", "", "no-name-password").SamePassword, "a login without a user name");
+    }
+
+    private static void LookupOrigins()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        v.Add("https://bank.example", "alice", "p4ss");
+
+        Expect(v.Lookup("http://bank.example", "alice", "p4ss").Id is null, "http is another origin");
+        Expect(v.Lookup("https://bank.example.evil.example", "alice", "p4ss").Id is null, "a look-alike host");
+        Expect(v.Lookup("https://bank.example:8443", "alice", "p4ss").Id is null, "another port");
+        Expect(v.Lookup("not an address", "alice", "p4ss").Id is null, "not an address");
+
+        var shut = NewVault(TempFile());
+        ExpectThrows<InvalidOperationException>(() => shut.Lookup("https://bank.example", "a", "b"), "a vault that is not open cannot be asked");
+    }
+
+    private static void CaptureHold()
+    {
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var capture = new Capture { Clock = () => now };
+        var tab = new object();
+        var other = new object();
+
+        Expect(capture.Hold(tab, "https://Example.com/login", "alice", "secret"), "held");
+        Expect(capture.Holds(tab) && !capture.Holds(other), "held for that tab only");
+
+        var taken = capture.Take(tab);
+        Expect(taken is { Site: "https://example.com", User: "alice", Password: "secret" }, "taken with the origin, not the address");
+        Expect(capture.Take(tab) is null && !capture.Holds(tab), "taken only once");
+
+        // A second login replaces the first.
+        capture.Hold(tab, "https://example.com", "alice", "first");
+        capture.Hold(tab, "https://example.com", "alice", "second");
+        Expect(capture.Take(tab)!.Password == "second", "the latest login is the one held");
+
+        // Waiting too long.
+        capture.Hold(tab, "https://example.com", "alice", "secret");
+        now = now.AddSeconds(14);
+        Expect(capture.Holds(tab), "still held after 14 seconds");
+        now = now.AddSeconds(2);
+        Expect(!capture.Holds(tab) && capture.Take(tab) is null, "gone after 16 seconds");
+        Expect(!capture.Holds(tab), "and nothing is left behind");
+
+        capture.Hold(tab, "https://example.com", "alice", "secret");
+        capture.Drop(tab);
+        Expect(capture.Take(tab) is null, "dropped means gone");
+
+        capture.Hold(tab, "https://example.com", "a", "b");
+        capture.Hold(other, "https://example.com", "a", "b");
+        capture.Clear();
+        Expect(!capture.Holds(tab) && !capture.Holds(other), "clear forgets all");
+    }
+
+    private static void TotpCodes()
+    {
+        const string key1 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"; // "12345678901234567890"
+        string Eight(string algorithm, string key, long at)
+        {
+            var t = Totp.Parse("otpauth://totp/x?secret=" + key + "&digits=8&algorithm=" + algorithm) ?? throw new Exception("not parsed");
+            return t.Code(DateTimeOffset.FromUnixTimeSeconds(at));
+        }
+
+        // The test values of RFC 6238, appendix B (8 digits; one key per algorithm).
+        Expect(Eight("SHA1", key1, 59) == "94287082", "SHA1 at 59");
+        Expect(Eight("SHA1", key1, 1111111109) == "07081804", "SHA1 keeps a leading zero");
+        Expect(Eight("SHA1", key1, 1111111111) == "14050471", "SHA1 at 1111111111");
+        Expect(Eight("SHA1", key1, 1234567890) == "89005924", "SHA1 at 1234567890");
+        Expect(Eight("SHA1", key1, 2000000000) == "69279037", "SHA1 at 2000000000");
+        Expect(Eight("SHA1", key1, 20000000000) == "65353130", "SHA1 at 20000000000");
+        Expect(Eight("SHA256", Totp.ToBase32(Encoding.ASCII.GetBytes("12345678901234567890123456789012")), 59) == "46119246", "SHA256 at 59");
+        Expect(Eight("SHA512", Totp.ToBase32(Encoding.ASCII.GetBytes("1234567890123456789012345678901234567890123456789012345678901234")), 59) == "90693936", "SHA512 at 59");
+
+        // A plain key as a site shows it: any case, in groups, with padding; six digits and thirty seconds.
+        var plain = Totp.Parse("gezd gnbv-gy3t qojq gezd gnbv gy3t qojq====") ?? throw new Exception("plain key");
+        Expect(plain.Digits == 6 && plain.Period == 30 && plain.Algorithm == "SHA1", "defaults");
+        Expect(plain.Code(DateTimeOffset.FromUnixTimeSeconds(59)) == "287082", "six digits are the last six");
+        Expect(plain.SecondsLeft(DateTimeOffset.FromUnixTimeSeconds(59)) == 1 && plain.SecondsLeft(DateTimeOffset.FromUnixTimeSeconds(60)) == 30, "seconds left");
+
+        // What is kept reads back as the same key with the same settings.
+        var again = Totp.Parse(Totp.Parse("otpauth://totp/Site:me%40x.com?secret=" + key1 + "&issuer=Site&digits=8&period=60&algorithm=sha256")!.Canonical());
+        Expect(again is not null && again.Digits == 8 && again.Period == 60 && again.Algorithm == "SHA256", "settings survive the canonical text");
+
+        // Not keys.
+        foreach (var bad in new[]
+        {
+            "", "   ", "not a key!", "GEZDGNBV", "otpauth://hotp/x?secret=" + key1 + "&counter=1", "otpauth://totp/x",
+            "otpauth://totp/x?secret=" + key1 + "&digits=5", "otpauth://totp/x?secret=" + key1 + "&period=5",
+            "otpauth://totp/x?secret=" + key1 + "&algorithm=MD5", "otpauth://totp/x?secret=" + new string('A', 400),
+        })
+        {
+            Expect(Totp.Parse(bad) is null, "refused: " + bad);
+        }
+    }
+
+    private static void OtpKeys()
+    {
+        const string key = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        var at = DateTimeOffset.FromUnixTimeSeconds(59);
+
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        var id = v.Add("https://a.example", "u", "p");
+
+        Expect(!v.HasOtp("https://a.example") && !v.List().Single().Otp, "no key at first");
+        Expect(v.Code(id, "https://a.example", at) is null, "no code without a key");
+        ExpectThrows<ArgumentException>(() => v.SetOtp(id, "not a key!"), "a bad key is refused, not kept");
+        Expect(!v.HasOtp("https://a.example"), "a refused key changed nothing");
+        Expect(!v.SetOtp(Guid.NewGuid(), key), "unknown id");
+
+        Expect(v.SetOtp(id, key), "set the key");
+        Expect(v.HasOtp("https://a.example/some/page") && v.List().Single().Otp, "the entry has a key");
+        Expect(!File.ReadAllText(path).Contains("GEZDGNBV", StringComparison.OrdinalIgnoreCase), "the key is not in the file in the clear");
+
+        var code = v.Code(id, "https://a.example/login", at);
+        Expect(code is not null && code.Code == "287082" && code.SecondsLeft == 1, "the code and the seconds left");
+        Expect(v.Code(id, "https://b.example", at) is null, "another origin gets nothing");
+        Expect(v.Code(id, "http://a.example", at) is null, "the http version gets nothing");
+        Expect(RevealText(v, id) == "p", "the password is untouched");
+
+        // It follows the entry: an edit with a new site, and a reopened file.
+        Expect(v.Update(id, "https://c.example", "u2", null), "update with a new site");
+        Expect(v.Code(id, "https://c.example", at)?.Code == "287082", "the key moved with the entry");
+        var reopened = NewVault(path);
+        reopened.Open();
+        Expect(reopened.Code(id, "https://c.example", at)?.Code == "287082", "the key was written");
+
+        // And it survives a change of how the vault is protected.
+        Expect(v.UsePassword("correct horse battery".AsSpan()) == VaultResult.Ok, "protect with a password");
+        Expect(v.Code(id, "https://c.example", at)?.Code == "287082", "the key was sealed again");
+        Expect(v.UseDpapi() == VaultResult.Ok, "back to Windows protection");
+        Expect(v.Code(id, "https://c.example", at)?.Code == "287082", "the key was sealed again, twice");
+
+        // A key can be taken away.
+        Expect(v.SetOtp(id, null), "clear the key");
+        Expect(!v.HasOtp("https://c.example") && v.Code(id, "https://c.example", at) is null, "no key left");
+    }
+
+    private static Dictionary<string, string> Fields(params string[] pairs)
+    {
+        var d = new Dictionary<string, string>();
+        for (var i = 0; i < pairs.Length; i += 2)
+            d[pairs[i]] = pairs[i + 1];
+
+        return d;
+    }
+
+    private static void ItemCleaning()
+    {
+        var card = ItemRules.Clean(ItemKind.Card, Fields("number", "4111 1111-1111 1111", "expiry", "8/2027", "cvc", " 123 ", "holder", "  A. Nguyen ", "bogus", "x"));
+        Expect(card["number"] == "4111111111111111" && card["expiry"] == "08/27" && card["cvc"] == "123" && card["holder"] == "A. Nguyen", "a card is cleaned");
+        Expect(!card.ContainsKey("bogus"), "an unknown field is left out");
+        Expect(card["label"] == "Card \u2022\u2022\u2022\u2022 1111", "the label is made from the number");
+        Expect(ItemRules.Summary(ItemKind.Card, card).Contains("1111") && !ItemRules.Summary(ItemKind.Card, card).Contains("4111"), "the summary shows only the last four digits");
+
+        foreach (var (typed, want) in new (string, string?)[] { ("08/27", "08/27"), ("0827", "08/27"), ("082027", "08/27"), ("8-27", "08/27"), ("12.2030", "12/30"), ("13/27", null), ("00/27", null), ("08/2", null), ("ab/cd", null), ("", null) })
+            Expect(ItemRules.Expiry(typed) == want, "expiry " + typed);
+
+        foreach (var bad in new[]
+        {
+            Fields("number", "1234"), Fields("number", "4111 1111 abcd 1111"), Fields("expiry", "08/27"),
+            Fields("number", "4111111111111111", "expiry", "99/99"), Fields("number", "4111111111111111", "cvc", "12"),
+            Fields("number", "4111111111111111", "cvc", "12a"), Fields("number", "4111111111111111", "holder", new string('x', 300)),
+        })
+        {
+            ExpectThrows<ArgumentException>(() => ItemRules.Clean(ItemKind.Card, bad), "a bad card is refused");
+        }
+
+        var who = ItemRules.Clean(ItemKind.Identity, Fields("first", "An", "last", "Nguyen", "city", "Hue", "street", "  "));
+        Expect(who["label"] == "An Nguyen" && !who.ContainsKey("street") && ItemRules.Summary(ItemKind.Identity, who) == "An Nguyen  \u00B7  Hue", "an identity is cleaned");
+        ExpectThrows<ArgumentException>(() => ItemRules.Clean(ItemKind.Identity, Fields("label", "Empty")), "an identity needs a field");
+        ExpectThrows<ArgumentException>(() => ItemRules.Clean("login", Fields("first", "x")), "not a kind of item");
+    }
+
+    private static void SavedItems()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+
+        var card = v.AddItem(ItemKind.Card, Fields("number", "4111 1111 1111 1111", "expiry", "08/27", "cvc", "123", "holder", "A Nguyen", "label", "Visa"));
+        var who = v.AddItem(ItemKind.Identity, Fields("first", "An", "last", "Nguyen", "email", "an@example.com"));
+
+        Expect(v.Items(ItemKind.Card).Single().Label == "Visa" && v.Items(ItemKind.Identity).Single().Id == who, "listed by kind");
+        Expect(v.HasItems(ItemKind.Card) && v.HasItems(ItemKind.Identity) && !NewVault(TempFile()).HasItems(ItemKind.Card), "has tells whether any is saved");
+        Expect(!v.Items(ItemKind.Card).Single().Damaged && v.Items(ItemKind.Card).Single().Summary.Contains("1111"), "the summary");
+
+        var text = File.ReadAllText(path);
+        Expect(!text.Contains("4111") && !text.Contains("Nguyen") && !text.Contains("an@example.com"), "nothing of an item is in the file in the clear");
+
+        var fill = v.FillItem(card, ItemKind.Card) ?? throw new Exception("no fill");
+        Expect(fill["number"] == "4111111111111111" && fill["cvc"] == "123", "the fields come back");
+        Expect(v.FillItem(card, ItemKind.Identity) is null, "an item of another kind is not handed out");
+        Expect(v.FillItem(Guid.NewGuid(), ItemKind.Card) is null, "unknown id");
+        Expect(v.ReadItem(card, Good)?["holder"] == "A Nguyen", "read behind the gate");
+        var spent = new Access(TimeSpan.FromMinutes(1));
+        spent.Revoke();
+        ExpectThrows<UnauthorizedAccessException>(() => v.ReadItem(card, spent), "a read without a sign-in is refused");
+
+        Expect(v.UpdateItem(card, Fields("number", "5555 4444 3333 1111", "label", "Master")), "update");
+        Expect(v.FillItem(card, ItemKind.Card)!["number"] == "5555444433331111" && !v.FillItem(card, ItemKind.Card)!.ContainsKey("cvc"), "fields are replaced, not merged");
+        ExpectThrows<ArgumentException>(() => v.UpdateItem(card, Fields("number", "12")), "a bad update is refused");
+        Expect(v.FillItem(card, ItemKind.Card)!["number"] == "5555444433331111", "a refused update changed nothing");
+
+        // Reopened, and sealed again with a new key when the protection changes, both ways.
+        var reopened = NewVault(path);
+        reopened.Open();
+        Expect(reopened.FillItem(card, ItemKind.Card)!["label"] == "Master", "written to the file");
+        Expect(v.UsePassword("correct horse battery".AsSpan()) == VaultResult.Ok, "protect with a password");
+        Expect(v.FillItem(card, ItemKind.Card)!["number"] == "5555444433331111" && v.FillItem(who, ItemKind.Identity)!["first"] == "An", "sealed again");
+        Expect(v.UseDpapi() == VaultResult.Ok && v.FillItem(card, ItemKind.Card)!["number"] == "5555444433331111", "sealed again, twice");
+
+        // A file made before items existed still opens.
+        var old = TempFile();
+        var fresh = NewVault(old);
+        fresh.Open();
+        var json = Read(old);
+        json.Remove("Items");
+        Save(old, json);
+        var legacy = NewVault(old);
+        Expect(legacy.Open() == OpenResult.Ready && legacy.Items(ItemKind.Card).Count == 0, "no list of items is fine");
+        Expect(legacy.AddItem(ItemKind.Identity, Fields("first", "x")) != Guid.Empty, "and one can be added");
+
+        Expect(v.RemoveItem(card) && !v.RemoveItem(card) && v.Items(ItemKind.Card).Count == 0, "remove");
+    }
+
+    private static void FileVersion()
+    {
+        const string key = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        var at = DateTimeOffset.FromUnixTimeSeconds(59);
+
+        int Version(string p) => Read(p)["Version"]!.GetValue<int>();
+
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        Expect(Version(path) == 1, "a new vault is version 1");
+
+        var id = v.Add("https://a.example", "u", "p");
+        Expect(Version(path) == 1, "logins alone stay version 1, so every NEAT can read the file");
+
+        // A key for one-time codes makes it version 2, and it is version 2 again after every later write.
+        Expect(v.SetOtp(id, key), "set the key");
+        Expect(Version(path) == 2, "a one-time-code key makes it version 2");
+        v.Add("https://b.example", "u", "p");
+        Expect(Version(path) == 2, "and it stays so");
+
+        // Fields sealed before the change still open: the sealing does not depend on the file's version.
+        var reopened = NewVault(path);
+        Expect(reopened.Open() == OpenResult.Ready, "a version 2 file opens here");
+        Expect(RevealText(reopened, id) == "p" && reopened.Code(id, "https://a.example", at)?.Code == "287082", "password and key open");
+
+        // A vault that held a login before the change keeps opening: version 1 sealed fields are read as they were.
+        var old = TempFile();
+        var legacy = NewVault(old);
+        legacy.Open();
+        var oldId = legacy.Add("https://c.example", "u", "secret");
+        Expect(Version(old) == 1, "the old file is version 1");
+        var json = Read(old);
+        json["Version"] = 1;
+        Save(old, json);
+        var again = NewVault(old);
+        Expect(again.Open() == OpenResult.Ready && RevealText(again, oldId) == "secret", "a version 1 file still opens");
+        again.AddItem(ItemKind.Identity, Fields("first", "An"));
+        Expect(Version(old) == 2, "a saved identity makes it version 2");
+        var third = NewVault(old);
+        Expect(third.Open() == OpenResult.Ready && RevealText(third, oldId) == "secret", "the old login opens after the file became version 2");
+
+        // The way back: nothing left that an older NEAT would lose, so it is version 1 again.
+        var items = again.Items(ItemKind.Identity);
+        Expect(again.RemoveItem(items.Single().Id), "remove the identity");
+        Expect(Version(old) == 1, "version 1 again with only logins in it");
+        Expect(v.SetOtp(id, null), "clear the key");
+        Expect(Version(path) == 1, "and again after the key goes");
+
+        // A card too, and a change of protection keeps the version that fits what is inside.
+        var card = v.AddItem(ItemKind.Card, Fields("number", "4111 1111 1111 1111"));
+        Expect(Version(path) == 2, "a card makes it version 2");
+        Expect(v.UsePassword("correct horse battery".AsSpan()) == VaultResult.Ok && Version(path) == 2, "a change of protection keeps version 2");
+        Expect(v.RemoveItem(card), "remove the card");
+        Expect(v.UseDpapi() == VaultResult.Ok && Version(path) == 1, "and goes back to version 1 with nothing left");
+
+        // A file from a NEAT that knows only version 1 meets a version 2 file: it must report and leave it (see BadFiles).
+        var future = TempFile();
+        File.WriteAllText(future, "{ \"Version\": 3, \"Mode\": \"dpapi\", \"Key\": \"AAAA\", \"Logins\": [] }");
+        Expect(NewVault(future).Open() == OpenResult.TooNew, "a version this code does not know is still reported");
+    }
+
+    private static void CardParts()
+    {
+        var now = DateTime.UtcNow;
+        var cards = new CardCapture { Clock = () => now };
+        var tab = new object();
+        var numberFrame = new object();
+        var expiryFrame = new object();
+        var codeFrame = new object();
+
+        // Nothing said: nothing to put together.
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _) && !cards.Holds(tab), "nothing said, nothing held");
+
+        // Each frame says its own: the number, the expiry, the code; in any order, and a part twice.
+        cards.Part(tab, expiryFrame, null, null, "8/2027", null);
+        cards.Part(tab, numberFrame, "4111111111111111", null, null, null);
+        cards.Part(tab, codeFrame, null, null, null, "123");
+        cards.Part(tab, codeFrame, null, null, null, "123");
+        Expect(cards.Submit(tab, "https://Shop.example/pay", "A Nguyen", out var from), "the parts become a held card");
+        Expect(ReferenceEquals(from, numberFrame), "and the frame the number came from is known");
+
+        var held = cards.Take(tab) ?? throw new Exception("nothing taken");
+        Expect(held.Site == "https://shop.example" && held.Number == "4111111111111111" && held.Expiry == "08/27" && held.Cvc == "123", "number, expiry and code from three frames");
+        Expect(held.Holder == "A Nguyen", "the name of the page above is used when no frame gave one");
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _), "put together once: the parts are used up");
+
+        // A frame's name wins over the page's; a bad value is left out, not refused.
+        cards.Part(tab, numberFrame, "4111111111111111", "Frame Name", "99/99", "12");
+        Expect(cards.Submit(tab, "https://shop.example", "Page Name", out _), "held");
+        held = cards.Take(tab)!;
+        Expect(held.Holder == "Frame Name" && held.Expiry == string.Empty && held.Cvc == string.Empty, "the frame's name, a bad expiry and code left out");
+
+        // A number that fails the check digit is never taken, so there is no card without one.
+        cards.Part(tab, numberFrame, "4111111111111112", null, "08/27", "123");
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _), "no valid number, no card");
+
+        // A different number starts the card over: its expiry and code are not the old card's.
+        cards.Part(tab, numberFrame, "4111111111111111", null, "08/27", "123");
+        cards.Part(tab, numberFrame, "5555555555554444", null, null, null);
+        Expect(cards.Submit(tab, "https://shop.example", string.Empty, out _), "held");
+        held = cards.Take(tab)!;
+        Expect(held.Number == "5555555555554444" && held.Expiry == string.Empty && held.Cvc == string.Empty, "the new card has nothing of the old one");
+
+        // Parts of one tab are not another's, they go stale, and a closed tab or Clear forgets them.
+        var other = new object();
+        cards.Part(tab, numberFrame, "4111111111111111", null, null, null);
+        Expect(!cards.Submit(other, "https://shop.example", string.Empty, out _), "another tab has none");
+        now = now.Add(CardCapture.PartsWindow).AddSeconds(1);
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _), "parts that waited too long are gone");
+
+        cards.Part(tab, numberFrame, "4111111111111111", null, null, null);
+        cards.Forget(tab);
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _), "a closed tab forgets them");
+        cards.Part(tab, numberFrame, "4111111111111111", null, null, null);
+        cards.Clear();
+        Expect(!cards.Submit(tab, "https://shop.example", string.Empty, out _), "Clear forgets them");
+
+        // Not a web page: nothing held.
+        cards.Part(tab, numberFrame, "4111111111111111", null, null, null);
+        Expect(!cards.Submit(tab, "about:blank", string.Empty, out _) && !cards.Holds(tab), "a page that is not a web page gets nothing");
+    }
+
+    private static void CardHeld()
+    {
+        Expect(ItemRules.Luhn("4111111111111111") && ItemRules.Luhn("5555555555554444") && ItemRules.Luhn("378282246310005"), "real test numbers pass");
+        Expect(!ItemRules.Luhn("4111111111111112") && !ItemRules.Luhn("1234567890123") && !ItemRules.Luhn("411111111111") && !ItemRules.Luhn("4111 1111 1111 1111"), "others do not");
+
+        var now = DateTime.UtcNow;
+        var cards = new CardCapture { Clock = () => now };
+        var tab = new object();
+        var other = new object();
+
+        Expect(!cards.Hold(tab, "https://shop.example", "4111111111111112", "A", "08/27", "123"), "a bad check digit is not held");
+        Expect(!cards.Hold(tab, "https://shop.example", "4111 abcd 1111 1111", "A", "08/27", "123"), "letters are not a number");
+        Expect(!cards.Hold(tab, "about:blank", "4111111111111111", "A", "08/27", "123"), "not a web page");
+        Expect(!cards.Holds(tab), "nothing held so far");
+
+        Expect(cards.Hold(tab, "https://Shop.example/pay?x=1", "4111 1111-1111 1111", "  A Nguyen ", "8/2027", "12"), "held");
+        var held = cards.Take(tab) ?? throw new Exception("nothing taken");
+        Expect(held.Site == "https://shop.example" && held.Number == "4111111111111111" && held.Holder == "A Nguyen", "site, number, holder");
+        Expect(held.Expiry == "08/27" && held.Cvc == string.Empty, "the expiry is made right, a security code that is not one is left out");
+        Expect(cards.Take(tab) is null && !cards.Holds(tab), "taken once");
+
+        cards.Hold(tab, "https://shop.example", "4111111111111111", string.Empty, "99/99", "123");
+        Expect(cards.Take(tab)!.Expiry == string.Empty && cards.Hold(other, "https://shop.example", "4111111111111111", "", "", "1234") && cards.Take(other)!.Cvc == "1234", "bad expiry is left out, a 4 digit code is kept");
+
+        cards.Hold(tab, "https://shop.example", "4111111111111111", "", "08/27", "123");
+        now = now.AddSeconds(25);
+        Expect(!cards.Holds(tab) && cards.Take(tab) is null, "a card that waited too long is gone");
+
+        // A refusal from the same site drops it; a good answer, another site and a background call do not.
+        cards.Hold(tab, "https://shop.example", "4111111111111111", "", "08/27", "123");
+        Expect(!cards.Answered(tab, "POST", "https://shop.example/pay", 200), "a good answer proves nothing");
+        Expect(!cards.Answered(tab, "POST", "https://elsewhere.test/pay", 422), "another site");
+        Expect(!cards.Answered(tab, "POST", "https://shop.example/analytics", 400), "a background call");
+        Expect(cards.Answered(tab, "POST", "https://shop.example/pay", 422) && !cards.Holds(tab), "a refusal drops it");
+
+        Expect(cards.MayOffer("https://shop.example") && !cards.MayOffer("https://shop.example"), "an offer is not repeated at once");
+        now = now.AddSeconds(31);
+        Expect(cards.MayOffer("https://shop.example"), "but later it may be");
+    }
+
+    private static void PasswordGenerated()
+    {
+        for (var n = 0; n < 200; n++)
+        {
+            var p = PasswordGen.Make();
+            Expect(p.Length == PasswordGen.Default, "default length");
+            Expect(p.Any(char.IsLower) && p.Any(char.IsUpper) && p.Any(char.IsDigit) && p.Any(c => !char.IsLetterOrDigit(c)), "every kind: " + p.Length);
+            Expect(p.IndexOfAny(new[] { 'l', 'I', 'O', '0', '1' }) < 0, "no look-alike letters or digits");
+
+            var plain = PasswordGen.Make(12, false);
+            Expect(plain.Length == 12 && plain.All(char.IsLetterOrDigit), "no symbols when switched off");
+            Expect(plain.Any(char.IsLower) && plain.Any(char.IsUpper) && plain.Any(char.IsDigit), "every kind without symbols");
+        }
+
+        Expect(PasswordGen.Make(1).Length == 8 && PasswordGen.Make(1000).Length == 128, "length is kept between 8 and 128");
+        Expect(PasswordGen.Make() != PasswordGen.Make(), "two passwords differ");
+    }
+
+    private static void LoginNetRefuses()
+    {
+        const string site = "https://example.com";
+
+        // The answers that mean "refused", for a request that changes something on the same site.
+        foreach (var status in new[] { 400, 401, 403, 422, 429 })
+            Expect(LoginNet.Refuses(site, "POST", "https://example.com/login", status), $"{status} refuses");
+
+        // A good answer proves nothing, and neither do answers background calls often give.
+        foreach (var status in new[] { 200, 204, 302, 404, 500, 503 })
+            Expect(!LoginNet.Refuses(site, "POST", "https://example.com/login", status), $"{status} does not refuse");
+
+        // Only a request that changes something counts.
+        Expect(LoginNet.Refuses(site, "put", "https://example.com/session", 401), "PUT, in lower case");
+        Expect(!LoginNet.Refuses(site, "GET", "https://example.com/login", 401), "GET");
+        Expect(!LoginNet.Refuses(site, "HEAD", "https://example.com/login", 401), "HEAD");
+        Expect(!LoginNet.Refuses(site, "OPTIONS", "https://example.com/login", 401), "OPTIONS");
+        Expect(!LoginNet.Refuses(site, null, "https://example.com/login", 401), "no method");
+
+        // The same site: its own host, a subdomain, a sibling subdomain, another port.
+        Expect(LoginNet.Refuses(site, "POST", "https://api.example.com/v1/auth", 401), "a subdomain");
+        Expect(LoginNet.Refuses("https://accounts.example.com", "POST", "https://api.example.com/auth", 401), "a sibling");
+        Expect(LoginNet.Refuses("https://www.example.com", "POST", "https://example.com/auth", 401), "the parent");
+        Expect(LoginNet.Refuses("https://example.com:8443", "POST", "https://example.com/auth", 401), "the port is not part of the site here");
+
+        // Other sites, look-alikes, bad addresses.
+        Expect(!LoginNet.Refuses(site, "POST", "https://other.org/login", 401), "another site");
+        Expect(!LoginNet.Refuses(site, "POST", "https://notexample.com/login", 401), "a host that only ends the same");
+        Expect(!LoginNet.Refuses(site, "POST", "https://example.com.evil.test/login", 401), "a host that only begins the same");
+        Expect(!LoginNet.Refuses(site, "POST", null, 401), "no address");
+        Expect(!LoginNet.Refuses(site, "POST", "not an address", 401), "not an address");
+        Expect(!LoginNet.Refuses(site, "POST", "data:text/plain,hello", 401), "not a web address");
+
+        // An address matches exactly, never by a shared tail.
+        Expect(LoginNet.Refuses("http://192.168.0.1", "POST", "http://192.168.0.1/login", 401), "the same address");
+        Expect(!LoginNet.Refuses("http://192.168.0.1", "POST", "http://192.168.0.2/login", 401), "a neighbouring address");
+        Expect(!LoginNet.Refuses("http://10.0.0.1", "POST", "http://20.0.0.1/login", 401), "an address with the same tail");
+
+        // Bookkeeping calls are not the login: by host word, or by a whole path segment.
+        Expect(!LoginNet.Refuses(site, "POST", "https://analytics.example.com/event", 403), "an analytics host");
+        Expect(!LoginNet.Refuses(site, "POST", "https://example.com/api/telemetry", 403), "a telemetry path");
+        Expect(!LoginNet.Refuses(site, "POST", "https://example.com/api/log", 400), "a log path");
+        Expect(!LoginNet.Refuses(site, "POST", "https://example.com/csp-report", 400), "a report path");
+        Expect(LoginNet.Refuses(site, "POST", "https://example.com/login", 401), "/login is not /log");
+        Expect(LoginNet.Refuses(site, "POST", "https://example.com/api/login/password", 401), "a longer path with login in it");
+        Expect(LoginNet.Refuses(site, "POST", "https://example.com/users/logout-all/login", 401), "a segment that only starts like one");
+    }
+
+    private static void CaptureAnswered()
+    {
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var capture = new Capture { Clock = () => now };
+        var tab = new object();
+        var other = new object();
+        const string login = "https://example.com/api/login";
+
+        // Nothing held: nothing to drop.
+        Expect(!capture.Answered(tab, "POST", login, 401), "nothing held, nothing dropped");
+
+        capture.Hold(tab, "https://example.com/login", "alice", "secret");
+        capture.Hold(other, "https://example.com/login", "bob", "secret");
+
+        // A good answer, a background call and another site's call leave it alone.
+        Expect(!capture.Answered(tab, "POST", login, 200), "a good answer");
+        Expect(!capture.Answered(tab, "GET", login, 401), "a GET");
+        Expect(!capture.Answered(tab, "POST", "https://tracker.test/collect", 401), "another site");
+        Expect(capture.Holds(tab), "still held after those");
+
+        // The server refuses: that tab's login goes, the other tab's stays.
+        Expect(capture.Answered(tab, "POST", login, 401), "refused");
+        Expect(!capture.Holds(tab) && capture.Take(tab) is null, "dropped means gone");
+        Expect(capture.Holds(other), "another tab's login is not touched");
+        Expect(!capture.Answered(tab, "POST", login, 401), "a second answer finds nothing to drop");
+
+        // A login that has waited too long is gone already.
+        capture.Hold(tab, "https://example.com/login", "alice", "secret");
+        now = now.AddSeconds(16);
+        Expect(!capture.Answered(tab, "POST", login, 401), "an expired login is not reported as dropped");
+
+        // The user name of a first step survives a refused login: the person tries the password again.
+        capture.HoldUser(tab, "https://example.com", "alice");
+        capture.Hold(tab, "https://example.com", string.Empty, "wrong");
+        Expect(capture.Answered(tab, "POST", login, 401), "refused again");
+        capture.Hold(tab, "https://example.com", string.Empty, "right");
+        Expect(capture.Take(tab)!.User == "alice", "the first step's user name was kept");
+    }
+
+    private static void CaptureRefuse()
+    {
+        var capture = new Capture();
+        var tab = new object();
+
+        Expect(!capture.Hold(tab, "https://example.com", "alice", ""), "no password");
+        Expect(!capture.Hold(tab, "javascript:alert(1)", "alice", "p"), "not a web address");
+        Expect(!capture.Hold(tab, "about:blank", "alice", "p"), "about:blank");
+        Expect(!capture.Hold(tab, "https://example.com", "alice", new string('x', Capture.MaxLength + 1)), "a password that long is not a login");
+        Expect(!capture.Hold(tab, "https://example.com", new string('x', Capture.MaxLength + 1), "p"), "a user name that long is not a login");
+        Expect(!capture.Holds(tab), "nothing was held");
+
+        Expect(capture.Hold(tab, "https://example.com", "", "p"), "an empty user name is fine");
+        Expect(capture.Hold(tab, "https://example.com", new string('x', Capture.MaxLength), new string('y', Capture.MaxLength)), "exactly the longest is fine");
+    }
+
+    private static void CaptureTwoStep()
+    {
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var capture = new Capture { Clock = () => now };
+        var tab = new object();
+        var other = new object();
+
+        // Google: the user name on one page, the password on the next, both on one site.
+        Expect(capture.HoldUser(tab, "https://accounts.google.com/v3/signin/identifier", "alice@gmail.com"), "the first step is kept");
+        Expect(capture.Hold(tab, "https://accounts.google.com/v3/signin/challenge/pwd", "", "the-password"), "the password step");
+        Expect(capture.Take(tab)!.User == "alice@gmail.com", "the user name of the first step is filled in");
+
+        // It is spent once the login has been offered: the next one starts clean.
+        capture.Hold(tab, "https://accounts.google.com", "", "again");
+        Expect(capture.Take(tab)!.User == "", "a spent user name is not used again");
+
+        // A user name that came with the login is not replaced.
+        capture.HoldUser(tab, "https://example.com", "from-step-one");
+        capture.Hold(tab, "https://example.com", "typed-here", "p");
+        Expect(capture.Take(tab)!.User == "typed-here", "the user name on the page wins");
+
+        // Not for another site, another tab, or after too long.
+        capture.HoldUser(tab, "https://example.com", "alice");
+        capture.Hold(tab, "https://other.example", "", "p");
+        Expect(capture.Take(tab)!.User == "", "another site does not get it");
+
+        capture.HoldUser(tab, "https://example.com", "alice");
+        capture.Hold(other, "https://example.com", "", "p");
+        Expect(capture.Take(other)!.User == "", "another tab does not get it");
+
+        capture.HoldUser(tab, "https://example.com", "alice");
+        now = now.AddMinutes(2.5);
+        capture.Hold(tab, "https://example.com", "", "p");
+        Expect(capture.Take(tab)!.User == "alice", "still good after 2.5 minutes");
+
+        capture.HoldUser(tab, "https://example.com", "alice");
+        now = now.AddMinutes(3.5);
+        capture.Hold(tab, "https://example.com", "", "p");
+        Expect(capture.Take(tab)!.User == "", "gone after 3.5 minutes");
+
+        // A failed login is dropped but the user name stays for the next try; a closed tab forgets both.
+        capture.HoldUser(tab, "https://example.com", "alice");
+        capture.Hold(tab, "https://example.com", "", "wrong");
+        capture.Drop(tab);
+        capture.Hold(tab, "https://example.com", "", "right");
+        Expect(capture.Take(tab)!.User == "alice", "the retry still has the user name");
+
+        capture.HoldUser(tab, "https://example.com", "alice");
+        capture.Forget(tab);
+        capture.Hold(tab, "https://example.com", "", "p");
+        Expect(capture.Take(tab)!.User == "", "a forgotten tab keeps nothing");
+
+        // What is not worth keeping.
+        Expect(!capture.HoldUser(tab, "https://example.com", ""), "an empty user name");
+        Expect(!capture.HoldUser(tab, "javascript:1", "alice"), "not a web address");
+        Expect(!capture.HoldUser(tab, "https://example.com", new string('x', Capture.MaxLength + 1)), "too long");
+
+        capture.HoldUser(tab, "https://example.com", "alice");
+        capture.Clear();
+        capture.Hold(tab, "https://example.com", "", "p");
+        Expect(capture.Take(tab)!.User == "", "clear forgets the user names too");
+    }
+
+    private static void CaptureCooldown()
+    {
+        var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var capture = new Capture { Clock = () => now };
+
+        Expect(capture.MayOffer("https://a.example"), "the first offer");
+        Expect(!capture.MayOffer("https://a.example"), "not again at once");
+        Expect(capture.MayOffer("https://b.example"), "another site is separate");
+
+        now = now.AddSeconds(19);
+        Expect(!capture.MayOffer("https://a.example"), "still waiting after 19 seconds");
+        now = now.AddSeconds(2);
+        Expect(capture.MayOffer("https://a.example"), "allowed again after 21 seconds");
+    }
+
+    private static void NeverList()
+    {
+        var list = new List<string>();
+        Expect(Never.Add(list, "https://example.com"), "added");
+        Expect(!Never.Add(list, "https://example.com"), "not twice");
+        Expect(!Never.Add(list, "https://example.com/login"), "an address that is not an origin is refused");
+        Expect(!Never.Add(list, "HTTPS://EXAMPLE.COM"), "so is one written another way");
+        Expect(!Never.Add(list, "javascript:1"), "and a non-web one");
+        Expect(Never.Has(list, "https://example.com") && !Never.Has(list, "http://example.com"), "http is another origin");
+
+        var clean = Never.Clean(new[] { "https://a.example/", "https://A.example", "junk", "", "http://b.example:80", "https://a.example" });
+        Expect(clean.SequenceEqual(new[] { "https://a.example", "http://b.example" }), "cleaned: " + string.Join(",", clean));
+        Expect(Never.Clean(null).Count == 0, "null is an empty list");
+
+        var full = Enumerable.Range(0, Never.Max).Select(i => $"https://site{i}.example").ToList();
+        Expect(!Never.Add(full, "https://one-more.example"), "a full list takes no more");
+        Expect(Never.Clean(full.Concat(new[] { "https://extra.example" })).Count == Never.Max, "a long list is cut to the limit");
+    }
+
+    // ---- filling ----
+
+    private static void HasSite()
+    {
+        var (v, _) = PasswordVault();
+        Expect(!v.IsOpen, "(sanity) the vault is shut");
+        Expect(v.Has("https://example.com/login"), "a site with a login, while shut");
+        Expect(!v.Has("https://other.example"), "a site with none");
+        Expect(!v.Has("http://example.com"), "http is another origin");
+        Expect(!v.Has("https://example.com:8443"), "another port");
+        Expect(!v.Has("javascript:alert(1)") && !v.Has("") && !v.Has("not an address"), "things that are not a site");
+
+        Expect(!NewVault(TempFile()).Has("https://example.com"), "a vault that was never read has nothing");
+
+        var path = TempFile();
+        Expect(!NewVault(path).FileExists, "no file yet");
+        NewVault(path).Open();
+        Expect(NewVault(path).FileExists, "a file after the first Open");
+    }
+
+    private static void FillOrigin()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        var id = v.Add("https://accounts.example.com", "alice@example.com", "the-password");
+
+        using (var ok = v.Fill(id, "https://accounts.example.com/signin?next=1"))
+        {
+            Expect(ok is not null, "the exact origin gets the login");
+            Expect(ok!.User == "alice@example.com" && ok.Password.Text() == "the-password", "with the right values");
+        }
+
+        foreach (var page in new[]
+        {
+            "http://accounts.example.com/",          // https login given to the http page
+            "https://accounts.example.com:8443/",    // another port
+            "https://example.com/",                  // the parent
+            "https://evil.accounts.example.com/",    // a child
+            "https://accounts.example.com.evil.example/",
+            "https://evil.example/https://accounts.example.com/",
+            "https://xn--ccounts-6ve.example.com/",  // a look-alike in punycode
+            "javascript:alert(1)",
+            "about:blank",
+            "",
+        })
+        {
+            Expect(v.Fill(id, page) is null, "a login was handed out for " + page);
+        }
+
+        // An http login goes to the http page only.
+        var plain = v.Add("http://old.example", "bob", "p");
+        Expect(v.Fill(plain, "http://old.example/") is not null, "http login, http page");
+        Expect(v.Fill(plain, "https://old.example/") is null, "http login, https page");
+
+        Expect(v.Fill(Guid.NewGuid(), "https://accounts.example.com/") is null, "an unknown entry");
+
+        // No sign-in is needed: this is for filling a page, not for showing the password.
+        var (pw, _) = PasswordVault();
+        pw.Unlock("the right password".AsSpan());
+        var entry = pw.List().Single();
+        Expect(pw.Fill(entry.Id, "https://example.com/") is not null, "fill works with no Access once the vault is open");
+    }
+
+    private static void FillSafety()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        var id = v.Add("https://example.com", "u", "p");
+
+        // A shut vault gives nothing and does not guess.
+        var shut = NewVault(path, new TestWrap(RandomNumberGenerator.GetBytes(32)));
+        shut.Open();
+        ExpectThrows<InvalidOperationException>(() => shut.Fill(id, "https://example.com/"), "a shut vault must refuse");
+
+        // An entry that does not check out is not filled.
+        var json = Read(path);
+        json["Logins"]![0]!["Pass"] = json["Logins"]![0]!["User"]!.GetValue<string>();
+        Save(path, json);
+        var again = NewVault(path);
+        again.Open();
+        Expect(again.Fill(id, "https://example.com/") is null, "a damaged entry was filled");
+    }
+
+    private static void LookalikeAddresses()
+    {
+        Expect(Lookalike.Shown("https://example.com") == "example.com", "an ordinary address is just the host");
+        Expect(Lookalike.Warning("https://example.com") is null, "and has no warning");
+        Expect(Lookalike.Warning("https://login.example.co.uk:8443") is null, "nor with sub-domains and a port");
+        Expect(Lookalike.Warning("https://192.168.0.1") is null && Lookalike.Shown("https://192.168.0.1") == "192.168.0.1", "an IP address");
+        Expect(Lookalike.Warning("https://[::1]:3000") is null, "an IPv6 address");
+
+        // A real foreign-language address: readable form, then the ASCII form, and a mild note.
+        var bucher = "https://b\u00fccher.de";
+        var origin = Origin.Of(bucher)!;
+        Expect(Lookalike.Shown(origin) == "b\u00fccher.de (xn--bcher-kva.de)", "shown: " + Lookalike.Shown(origin));
+        var mild = Lookalike.Warning(origin);
+        Expect(mild is not null && mild.Contains("outside a-z") && !mild.Contains("mixes"), "a mild note: " + mild);
+
+        // Vietnamese letters are Latin letters: a note, not an alarm.
+        var viet = Origin.Of("https://vi\u1ec7t.vn")!;
+        Expect(Lookalike.Warning(viet) is { } v && v.Contains("outside a-z") && !v.Contains("mixes"), "Vietnamese is not mixed alphabets");
+
+        // "apple.com" with a Cyrillic a: Latin and Cyrillic in one word.
+        var fake = Origin.Of("https://\u0430pple.com")!;
+        Expect(fake.Contains("xn--"), "(sanity) the fake is kept in punycode: " + fake);
+        Expect(Lookalike.Shown(fake).Contains(fake.Replace("https://", "")), "the ASCII form is always shown: " + Lookalike.Shown(fake));
+        Expect(Lookalike.Warning(fake) is { } w && w.Contains("mixes alphabets"), "mixed alphabets are called out: " + Lookalike.Warning(fake));
+
+        // A whole word in another alphabet is also flagged, though not as mixed.
+        var allCyr = Origin.Of("https://\u0430\u0440\u0440\u04cf\u0435.com")!;
+        Expect(Lookalike.Warning(allCyr) is not null, "an all-Cyrillic imitation is at least flagged");
+
+        // An address that is not written correctly.
+        Expect(Lookalike.Warning("https://xn--zz--zz.example") is not null, "a broken xn-- label is flagged");
+        Expect(Lookalike.Warning("not an address") is null && Lookalike.Shown("not an address") == "not an address", "junk is left alone");
+    }
+
+    private static void FillScriptData()
+    {
+        var nasty = "p');alert(1)//\\\"</script>\n\u2028\u2029\u00e9 \ud83d\ude00 \0";
+        var script = FillScript.For("https://example.com", "us\"er", nasty);
+
+        Expect(script.StartsWith("(" + FillScript.Source + ")("), "the script is the fixed function applied to data");
+        Expect(script.EndsWith(");"), "and ends there");
+
+        // The data is the whole of what follows the function, and reads back exactly.
+        var json = script.Substring(FillScript.Source.Length + 3, script.Length - FillScript.Source.Length - 5);
+        using var doc = JsonDocument.Parse(json);
+        Expect(doc.RootElement.GetProperty("o").GetString() == "https://example.com", "origin");
+        Expect(doc.RootElement.GetProperty("u").GetString() == "us\"er", "user");
+        Expect(doc.RootElement.GetProperty("p").GetString() == nasty, "password with every awkward character");
+
+        // Nothing in the data can end the script's text early: no raw quote, newline or line separator
+        // outside what JSON escapes.
+        Expect(!json.Contains('\n') && !json.Contains('\u2028') && !json.Contains('\u2029'), "no raw line breaks in the data");
+        Expect(!json.Contains("</script>"), "no raw </script>");
+        Expect(json.Count(c => c == '{') == 1 && json.Count(c => c == '}') == 1, "the data is one flat object");
+    }
+
+    // ---- import, export and changed passwords ----
+
+    private static void CsvRoundTrip()
+    {
+        var rows = Csv.Parse("a,b,c\r\n1,\"two, with comma\",3\n\"quote \"\"inside\"\"\",\"line\nbreak\",x\n\n,,\nlast,row,no-newline");
+        Expect(rows.Count == 5, "five rows (the blank line is not one): " + rows.Count);
+        Expect(rows[1][1] == "two, with comma", "a comma inside quotes");
+        Expect(rows[2][0] == "quote \"inside\"" && rows[2][1] == "line\nbreak", "doubled quotes and a line break inside quotes");
+        Expect(rows[3].Length == 3 && rows[3].All(f => f.Length == 0), "a row of empty fields is kept");
+        Expect(rows[4][2] == "no-newline", "a last line with no line break");
+
+        Expect(Csv.Parse("\uFEFFurl,password\r\nhttps://a.example,p").First()[0] == "url", "a byte order mark is dropped");
+        Expect(Csv.Parse("").Count == 0 && Csv.Parse("\n\n").Count == 0, "nothing in, nothing out");
+        Expect(Csv.Parse("a,b\rc,d").Count == 2, "a bare CR ends a row");
+        Expect(Csv.Parse("a\"b,c")[0][0] == "a\"b", "a quote in the middle of a field is just a quote");
+
+        Expect(Csv.Field("plain") == "plain" && Csv.Field("") == "", "plain stays plain");
+        Expect(Csv.Field("a,b") == "\"a,b\"" && Csv.Field("a\"b") == "\"a\"\"b\"" && Csv.Field(" x") == "\" x\"", "quoted when needed");
+
+        foreach (var value in new[] { "", "plain", "with, comma", "quote\"s", "two\nlines", "cr\rlf", " spaced ", "\"", ",", "\"\"", "a\"\",b", "\u00e9\ud83d\ude00" })
+        {
+            var back = Csv.Parse(Csv.Row("x", value, "y"));
+            Expect(back.Count == 1 && back[0].Length == 3 && back[0][1] == value, "round trip of " + System.Text.Json.JsonSerializer.Serialize(value));
+        }
+    }
+
+    private static void ExchangeRead()
+    {
+        var chrome = "name,url,username,password,note\r\n"
+            + "example,https://example.com/login,alice,p1,\r\n"
+            + "app,android://abc@com.example.app/,bob,p2,\r\n"
+            + "nopass,https://nopass.example,carol,,\r\n"
+            + "keep,https://Keep.example:8443/x,dave,\"p,3\",note\r\n";
+        var r = Exchange.Read(chrome);
+        Expect(r.Problem is null && r.Rows.Count == 2 && r.Skipped == 2, $"chrome: {r.Rows.Count} rows, {r.Skipped} skipped, {r.Problem}");
+        Expect(r.Rows[0] == new ImportRow("https://example.com", "alice", "p1"), "the site is reduced to its origin");
+        Expect(r.Rows[1] == new ImportRow("https://keep.example:8443", "dave", "p,3"), "port kept, comma in a password kept");
+
+        var firefox = "\"url\",\"username\",\"password\",\"httpRealm\",\"formActionOrigin\",\"guid\",\"timeCreated\"\r\n"
+            + "\"https://fox.example\",\"fred\",\"secret\",\"\",\"https://fox.example\",\"{1}\",\"1\"\r\n";
+        var f = Exchange.Read(firefox);
+        Expect(f.Rows.Count == 1 && f.Rows[0] == new ImportRow("https://fox.example", "fred", "secret"), "firefox");
+
+        var shuffled = Exchange.Read("PASSWORD , URL ,Username\np,https://s.example,u");
+        Expect(shuffled.Rows.Count == 1 && shuffled.Rows[0].User == "u", "any column order, any case");
+
+        Expect(Exchange.Read("").Problem is not null, "an empty file");
+        Expect(Exchange.Read("name,note\nx,y").Problem is not null, "a file that is not a password export");
+        Expect(Exchange.Read("username,password\nu,p").Problem is not null, "a file with passwords but no addresses cannot be imported");
+        Expect(Exchange.Read("url,username\nhttps://a.example,u").Problem is not null, "a file with addresses but no passwords cannot be imported");
+        Expect(Exchange.Read("url,password\nhttp://a.example,p").Rows.Count == 1, "a file with no user name column");
+
+        var tooLong = Exchange.Read("url,username,password\nhttps://a.example,u," + new string('x', Capture.MaxLength + 1));
+        Expect(tooLong.Rows.Count == 0 && tooLong.Skipped == 1, "a password that long is skipped");
+
+        var many = "url,password\n" + string.Concat(Enumerable.Range(0, Exchange.MaxRows + 1).Select(i => $"https://s{i}.example,p\n"));
+        Expect(Exchange.Read(many).Problem is not null, "more rows than the limit");
+    }
+
+    private static void ExchangeWrite()
+    {
+        var rows = new List<ImportRow>
+        {
+            new("https://a.example", "alice", "plain"),
+            new("https://b.example:8443", "", "with, comma and \"quotes\""),
+            new("http://c.example", "carol@c.example", "two\nlines \u00e9\ud83d\ude00 "),
+        };
+
+        var text = Exchange.Write(rows);
+        Expect(text.StartsWith("name,url,username,password,note\r\n"), "the header Chrome writes");
+
+        var back = Exchange.Read(text);
+        Expect(back.Problem is null && back.Skipped == 0 && back.Rows.SequenceEqual(rows), "what was written reads back the same");
+    }
+
+    private static void ImportLogins()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        v.Add("https://a.example", "alice", "saved-a");
+        v.Add("https://b.example", "bob", "saved-b");
+
+        var rows = new List<ImportRow>
+        {
+            new("https://a.example", "alice", "saved-a"),          // already saved
+            new("https://b.example", "bob", "different"),          // same user, other password: conflict
+            new("https://c.example", "carol", "new-c"),            // new
+            new("https://c.example", "carol", "new-c"),            // repeated in the file
+            new("https://c.example", "carol", "another-c"),        // same user again with another password
+            new("https://d.example", "", "no-name"),               // new, no user name
+            new("javascript:1", "x", "y"),                          // not a site
+            new("https://e.example", "eve", ""),                    // no password
+        };
+
+        var result = v.Import(rows, true);
+        Expect(result == new ImportResult(2, 2, 2, 2), "result: " + result);
+
+        var list = v.List();
+        Expect(list.Count == 4, "four entries now: " + list.Count);
+        Expect(RevealText(v, v.Find("https://b.example").Single().Id) == "saved-b", "the conflicting login was not replaced");
+        Expect(RevealText(v, v.Find("https://c.example").Single().Id) == "new-c", "the first of the repeats won");
+        Expect(v.Lookup("https://d.example", "", "no-name").SamePassword, "a login with no user name");
+
+        // Importing the same file again adds nothing.
+        var again = v.Import(rows, true);
+        Expect(again.Added == 0 && again.Already == 4, "the second import adds nothing: " + again);
+
+        // It survived the write.
+        var reopened = NewVault(path);
+        reopened.Open();
+        Expect(reopened.List().Count == 4, "four entries on disk");
+    }
+
+    private static void ImportAtomic()
+    {
+        var path = TempFile();
+        var v = NewVault(path);
+        v.Open();
+        v.Add("https://a.example", "alice", "p");
+        var before = File.ReadAllBytes(path);
+
+        var rows = Enumerable.Range(0, 50).Select(i => new ImportRow($"https://s{i}.example", "u", "p" + i)).ToList();
+
+        var preview = v.Import(rows, false);
+        Expect(preview.Added == 50, "the preview counts them: " + preview);
+        Expect(before.SequenceEqual(File.ReadAllBytes(path)) && v.List().Count == 1, "a preview must change nothing");
+
+        // A write that fails leaves the vault as it was.
+        var blocked = TempFile();
+        var folder = Path.GetDirectoryName(blocked)!;
+        var w = NewVault(blocked);
+        w.Open();
+        w.Add("https://a.example", "alice", "p");
+        Directory.Delete(folder, true);
+        File.WriteAllText(folder, "now a file");
+        try
+        {
+            ExpectThrows<IOException>(() => w.Import(rows, true), "a failed write throws");
+            Expect(w.List().Count == 1, "and nothing of the import stays in memory");
+        }
+        finally
+        {
+            File.Delete(folder);
+        }
+
+        // One write for the whole file, however many logins.
+        var big = NewVault(TempFile());
+        big.Open();
+        var many = Enumerable.Range(0, 500).Select(i => new ImportRow($"https://s{i}.example", "u", "p" + i)).ToList();
+        Expect(big.Import(many, true).Added == 500 && big.List().Count == 500, "500 logins at once");
+    }
+
+    private static void ExchangeKeys()
+    {
+        const string key = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        var at = DateTimeOffset.FromUnixTimeSeconds(59);
+
+        var v = NewVault(TempFile());
+        v.Open();
+        var a = v.Add("https://a.example", "alice", "pw-a");
+        v.Add("https://b.example", "bob", "pw-b");
+        Expect(v.SetOtp(a, key), "set a key");
+
+        var rows = v.Export(Good).Rows;
+        Expect(rows.Single(r => r.User == "alice").Otp is { } k && k.StartsWith("otpauth://totp/"), "the key is exported in its canonical form");
+        Expect(rows.Single(r => r.User == "bob").Otp is null, "a login with no key has none");
+
+        var text = Exchange.Write(rows);
+        Expect(text.StartsWith("name,url,username,password,note,totp\r\n"), "a totp column after the usual ones");
+
+        var other = NewVault(TempFile());
+        other.Open();
+        Expect(other.Import(Exchange.Read(text).Rows, true).Added == 2, "both are imported");
+        var again = other.List().Single(l => l.User == "alice");
+        Expect(again.Otp && other.Code(again.Id, "https://a.example", at)?.Code == "287082", "the key came along and gives the same code");
+        Expect(!other.List().Single(l => l.User == "bob").Otp, "the other has none");
+
+        // Other programs name the column differently and write the key plain or as an address; a bad key costs only the key.
+        var csv = "url,username,password,login_totp\n"
+            + "https://x.example,u1,p1," + key + "\n"
+            + "https://y.example,u2,p2,otpauth://totp/y?secret=" + key + "&digits=8\n"
+            + "https://z.example,u3,p3,not a key!\n"
+            + "https://w.example,u4,p4,123456\n";
+        var read = Exchange.Read(csv);
+        Expect(read.Problem is null && read.Rows.Count == 4 && read.Skipped == 0, "every login is read");
+        Expect(read.Rows[0].Otp is not null && read.Rows[1].Otp is not null && read.Rows[2].Otp is null && read.Rows[3].Otp is null, "a key is kept only if it is one (a code is not a key)");
+
+        var third = NewVault(TempFile());
+        third.Open();
+        Expect(third.Import(read.Rows, true).Added == 4, "imported");
+        Expect(third.HasOtp("https://x.example") && third.HasOtp("https://y.example") && !third.HasOtp("https://z.example") && !third.HasOtp("https://w.example"), "keys follow their logins");
+
+        // A file without any key keeps the header Chrome writes.
+        Expect(Exchange.Write(new[] { new ImportRow("https://a.example", "u", "p") }).StartsWith("name,url,username,password,note\r\n"), "no column that is not needed");
+    }
+
+    private static void ExchangeItems()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        v.AddItem(ItemKind.Card, Fields("number", "4111 1111 1111 1111", "expiry", "08/27", "cvc", "123", "holder", "A Nguyen", "label", "Visa"));
+        v.AddItem(ItemKind.Identity, Fields("first", "An", "last", "Nguyen", "email", "an@example.com", "city", "Hanoi, VN"));
+
+        var clock = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var spent = new Access(TimeSpan.FromMinutes(1), () => clock);
+        clock = clock.AddMinutes(5);
+        ExpectThrows<UnauthorizedAccessException>(() => v.ExportItems(spent), "an expired sign-in cannot export");
+        ExpectThrows<UnauthorizedAccessException>(() => v.ExportItems(null!), "no sign-in cannot export");
+
+        var export = v.ExportItems(Good);
+        Expect(export.Damaged == 0 && export.Rows.Count == 2, "two items");
+
+        var text = Exchange.WriteItems(export.Rows);
+        Expect(Exchange.LooksLikeItems(text), "it is known for a file of items");
+        Expect(!Exchange.LooksLikeItems(Exchange.Write(new[] { new ImportRow("https://a.example", "u", "p") })), "a file of logins is not");
+        Expect(!Exchange.LooksLikeItems("") && !Exchange.LooksLikeItems("name,note\nx,y"), "nor is an empty or another file");
+
+        var read = Exchange.ReadItems(text);
+        Expect(read.Problem is null && read.Skipped == 0 && read.Rows.Count == 2, "it reads back");
+        Expect(read.Rows.Single(r => r.Kind == ItemKind.Card).Fields["number"] == "4111111111111111" && read.Rows.Single(r => r.Kind == ItemKind.Identity).Fields["city"] == "Hanoi, VN", "with its fields, a comma too");
+
+        var other = NewVault(TempFile());
+        other.Open();
+        var preview = other.ImportItems(read.Rows, false);
+        Expect(preview == new ImportResult(2, 0, 0, 0) && !other.HasItems(ItemKind.Card), "a preview changes nothing");
+        Expect(other.ImportItems(read.Rows, true) == new ImportResult(2, 0, 0, 0), "imported");
+        var card = other.Items(ItemKind.Card).Single();
+        Expect(card.Label == "Visa" && other.FillItem(card.Id, ItemKind.Card)!["cvc"] == "123", "the card came whole");
+        Expect(other.ImportItems(read.Rows, true) == new ImportResult(0, 2, 0, 0), "the same file again adds nothing");
+
+        // What is not an item is skipped and counted, and a file of items is not read as logins.
+        var mixed = "type,label,number,first\ncard,Bad,12,\nvoucher,x,,\nidentity,Me,,An\n";
+        var m = Exchange.ReadItems(mixed);
+        Expect(m.Rows.Count == 1 && m.Skipped == 2 && m.Rows[0].Kind == ItemKind.Identity, "a bad card and a type that is not known are skipped");
+        Expect(Exchange.ReadItems("url,password\nhttps://a.example,p").Problem is not null && Exchange.ReadItems("").Problem is not null, "a file of logins or an empty one is a problem");
+    }
+
+    private static void ExportLogins()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        v.Add("https://a.example", "alice", "pw-a");
+        v.Add("https://b.example", "", "pw, b");
+
+        var clock = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var access = new Access(TimeSpan.FromMinutes(1), () => clock);
+        Expect(v.Export(access).Rows.Count == 2, "(sanity) a valid sign-in can export");
+        clock = clock.AddMinutes(5);
+        ExpectThrows<UnauthorizedAccessException>(() => v.Export(access), "an expired sign-in cannot export");
+        ExpectThrows<UnauthorizedAccessException>(() => v.Export(null!), "no sign-in cannot export");
+
+        var result = v.Export(Good);
+        Expect(result.Damaged == 0 && result.Rows.Count == 2, "two logins");
+        Expect(result.Rows.Any(r => r.User == "alice" && r.Password == "pw-a" && r.Site == "https://a.example"), "the first");
+        Expect(result.Rows.Any(r => r.User == "" && r.Password == "pw, b"), "the second");
+
+        // Out through a file and back in to another vault.
+        var other = NewVault(TempFile());
+        other.Open();
+        var read = Exchange.Read(Exchange.Write(result.Rows));
+        Expect(other.Import(read.Rows, true).Added == 2, "the export imports into another vault");
+
+        // A damaged entry is left out and counted.
+        var path = TempFile();
+        var d = NewVault(path);
+        d.Open();
+        d.Add("https://a.example", "u", "p");
+        d.Add("https://b.example", "u", "p");
+        var json = Read(path);
+        json["Logins"]![0]!["Site"] = "https://evil.example";
+        Save(path, json);
+        var again = NewVault(path);
+        again.Open();
+        var partial = again.Export(Good);
+        Expect(partial.Damaged == 1 && partial.Rows.Count == 1, "damaged: " + partial.Damaged);
+
+        var shut = NewVault(TempFile());
+        ExpectThrows<InvalidOperationException>(() => shut.Export(Good), "a shut vault cannot export");
+    }
+
+    private static void MatchOldPassword()
+    {
+        var v = NewVault(TempFile());
+        v.Open();
+        var alice = v.Add("https://example.com", "alice", "old-pass");
+        var bob = v.Add("https://example.com", "bob", "old-pass");
+        v.Add("https://example.com", "carol", "other-pass");
+        v.Add("https://other.example", "alice", "old-pass");
+
+        Expect(v.MatchOld("https://example.com/account", "alice", "old-pass").SequenceEqual(new[] { alice }), "a user name narrows it to one");
+        Expect(v.MatchOld("https://example.com", "", "old-pass").ToHashSet().SetEquals(new[] { alice, bob }), "no user name: every entry with that password");
+        Expect(v.MatchOld("https://example.com", "dave", "old-pass").Count == 0, "no such user");
+        Expect(v.MatchOld("https://example.com", "alice", "wrong").Count == 0, "no such password");
+        Expect(v.MatchOld("http://example.com", "alice", "old-pass").Count == 0, "another origin");
+        Expect(v.MatchOld("not an address", "alice", "old-pass").Count == 0, "not an address");
+        Expect(v.MatchOld("https://example.com", "", "Old-pass").Count == 0, "case matters");
+
+        ExpectThrows<InvalidOperationException>(() => NewVault(TempFile()).MatchOld("https://example.com", "", "x"), "a shut vault");
+    }
+
+    private static void CaptureOld()
+    {
+        var capture = new Capture();
+        var tab = new object();
+
+        Expect(capture.Hold(tab, "https://example.com", "alice", "new-pass", "old-pass"), "held with the old password");
+        Expect(capture.Take(tab)!.Old == "old-pass", "the old password comes back with the held login");
+
+        capture.Hold(tab, "https://example.com", "alice", "new-pass");
+        Expect(capture.Take(tab)!.Old is null, "an ordinary login has none");
+
+        capture.Hold(tab, "https://example.com", "alice", "same", "same");
+        Expect(capture.Take(tab)!.Old is null, "an old password equal to the new one is not a change");
+
+        capture.Hold(tab, "https://example.com", "alice", "new-pass", "");
+        Expect(capture.Take(tab)!.Old is null, "an empty old password is not one");
+
+        capture.Hold(tab, "https://example.com", "alice", "new-pass", new string('x', Capture.MaxLength + 1));
+        Expect(capture.Take(tab)!.Old is null, "an old password that long is dropped, the login is still held");
+    }
+
+    private static void NeverRemove()
+    {
+        var list = new List<string> { "https://a.example", "https://b.example" };
+        Expect(Never.Remove(list, "https://a.example") && list.SequenceEqual(new[] { "https://b.example" }), "removed");
+        Expect(!Never.Remove(list, "https://a.example"), "not there any more");
+        Expect(!Never.Remove(list, "https://B.example"), "an origin is matched exactly");
+    }
+
+    private sealed class FakeHello : IHello
+    {
+        public HelloState State { get; set; } = HelloState.Ready;
+
+        public bool Answer { get; set; }
+
+        public bool ThrowOnState { get; set; }
+
+        public bool ThrowOnAsk { get; set; }
+
+        public string? LastMessage { get; private set; }
+
+        public Task<HelloState> StateAsync()
+        {
+            return ThrowOnState ? throw new InvalidOperationException("no Hello") : Task.FromResult(State);
+        }
+
+        public Task<bool> AskAsync(string message)
+        {
+            LastMessage = message;
+            return ThrowOnAsk ? throw new InvalidOperationException("no Hello") : Task.FromResult(Answer);
+        }
+    }
+
+    // ---- a stand-in for DPAPI that works anywhere ----
+
+    private sealed class TestWrap : IKeyWrap
+    {
+        private readonly byte[] _secret;
+
+        public TestWrap(byte[] secret)
+        {
+            _secret = secret;
+        }
+
+        public byte[] Protect(byte[] key)
+        {
+            return Seal.Encrypt(_secret, key, Array.Empty<byte>());
+        }
+
+        public byte[]? Unprotect(byte[] blob)
+        {
+            return Seal.Decrypt(_secret, blob, Array.Empty<byte>());
+        }
+    }
+}

@@ -1,0 +1,899 @@
+namespace neat;
+
+/// <summary>
+/// The two scripts of the save-password bubble. Both are JavaScript kept in C# strings; the
+/// self-check in tests/capture.check reads them from this file and runs them against made-up
+/// login forms, so keep each one between its own """ marks and do not use """ inside.
+///
+/// What the page script does and does not do:
+///   - It runs in the top page and in the frames right under it (not deeper ones, and not a frame without an
+///     address of its own, such as about:blank or srcdoc). What a frame reports goes to the window only through
+///     the frame's own channel (never to the parent page), marked fr, and the window takes the address from
+///     that channel, not from the message. Where a frame's field sits on the page is told by the top page
+///     (it alone can see the frame's box): the frame posts the box to its parent, and the top page forwards it.
+///   - It reacts only to real clicks and the Enter key (isTrusted): a page that makes up events
+///     cannot make it report anything. It does NOT listen for "submit": the browser itself fires
+///     that, with isTrusted true, when a page calls button.click() or form.requestSubmit(), so
+///     it proves nothing about the person. A page can still type into its own form, but then
+///     it only gets NEAT to ask the person whether to save what the page itself already has.
+///   - It reports a login, it does not decide. Whether it worked is found out afterwards,
+///     by the window (see vault/capture.cs).
+///   - A change-password form (the old password, then the new one twice; or fields marked
+///     autocomplete current-password and new-password) is reported as the new password with the
+///     old one beside it, so the window can find the saved entry it replaces. Two different
+///     passwords with nothing to say which is which are left alone: that may just be a typing mistake.
+///   - Two-step logins (user name on one page, password on the next) are reported in two parts: the
+///     first step sends only the user name, and the window puts the two together. A password page
+///     may also carry the user name in a hidden field marked autocomplete="username" (that is what
+///     password managers look for), which is used when no visible field has it.
+///   - It reads open shadow roots too (web components): fields, buttons and keys inside them are
+///     found, and a field is "on show" only if every host above it is. Closed shadow roots cannot be read.
+///   - A password field is one of type password, one that is drawn masked (-webkit-text-security),
+///     or one the page switched to type text to show it ("show password") that still says
+///     password in its autocomplete, name or id. Such a field is never taken for the user name.
+///   - Cancel, Close, Back and "show password" buttons are not a sign-in: a click on one is left alone,
+///     so closing a login dialog after typing does not look like a login that worked. A control that is
+///     not a button but looks clickable (cursor: pointer, a styled div) counts only when a filled
+///     password field is on show, so that it never starts the two-step guess on its own.
+///   - Which password field is which (the one now in use, the new one, its confirmation) is read from
+///     autocomplete and from what the field says about itself (label, placeholder, name). Where that
+///     is not enough, the form's own words decide what kind of form it is (classify below: heading,
+///     buttons, links, checkboxes): a form that is plainly a change-password form, with two different
+///     passwords and no marks, is reported as the new password with the old one beside it. A sign-in
+///     or sign-up form with two different passwords is still taken for a typing mistake and left alone.
+///   - Rules for single sites (pass/rules.json, filled in as __RULES__) can leave a part of a page
+///     out, or name the exact user name and password fields of a form the guess gets wrong.
+///   - It runs in the page's own world, so the page can see that it exists. What it sends
+///     starts with the session token (the same kind as the shortcut script's), but the token
+///     is not a secret from the page: what really checks a message is the window, which
+///     accepts it only from the page that is open in the tab, by origin.
+/// </summary>
+internal static class CaptureScript
+{
+    /// <summary>The script added to every page, with the session token filled in.</summary>
+    public static string For(string token)
+    {
+        // The rules go in last: they are the one piece that may contain any text.
+        return Source.Replace("__TOKEN__", token).Replace("__RULES__", SiteRules.Json);
+    }
+
+    public const string Source = """
+        (() => {
+          // A frame is read only when it sits right under the top page and is an ordinary web page (not
+          // about:blank, srcdoc or a sandbox without an origin). Frames deeper down are left alone.
+          const inFrame = window.top !== window;
+          if (inFrame && (window.parent !== window.top || !/^https?:$/.test(location.protocol))) return;
+          const w = window.chrome && window.chrome.webview;
+          if (!w) return;
+          const send = w.postMessage.bind(w);
+          const TOKEN = '__TOKEN__';
+          const RULES = __RULES__;
+          const MAX = 512;
+          // What names this frame to the window and to the top page (the two halves of one field message
+          // are matched by it). Not a secret: the frame's own page can read it, and nothing depends on it
+          // but where a key is drawn.
+          const FID = !inFrame ? '' : (() => {
+            try { const a = new Uint32Array(4); crypto.getRandomValues(a); return Array.from(a, n => n.toString(36)).join(''); }
+            catch (e) { return String(Math.random()).slice(2) + Date.now().toString(36); }
+          })();
+          // Everything a frame says goes to the window through the frame's own channel (fr: 1), which the
+          // window ties to the frame and to its address. Nothing secret is ever posted to the parent page.
+          const post = o => {
+            try {
+              if (inFrame) { o.fr = 1; o.fid = FID; }
+              send('neatpw:' + TOKEN + ':' + JSON.stringify(o));
+            } catch (e) {}
+          };
+
+          // ---- walking the page, open shadow roots included ----
+
+          // The element a node sits in, or the host of the shadow root it is the top of.
+          const up = n => n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
+
+          const closestDeep = (el, sel) => {
+            for (let n = el; n; n = up(n)) {
+              try { if (n.matches && n.matches(sel)) return n; } catch (e) { return null; }
+            }
+            return null;
+          };
+
+          // Every input under a node, in page order, looking into open shadow roots. No recursion,
+          // so a page nested very deep cannot overflow the stack.
+          const inputsIn = root => {
+            const out = [];
+            const stack = [root.documentElement || root];
+            while (stack.length) {
+              const n = stack.pop();
+              if (n.tagName === 'INPUT') out.push(n);
+              const kids = [];
+              if (n.shadowRoot) for (let c = n.shadowRoot.firstElementChild; c; c = c.nextElementSibling) kids.push(c);
+              for (let c = n.firstElementChild; c; c = c.nextElementSibling) kids.push(c);
+              for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+            }
+            return out;
+          };
+
+          const target = e => {
+            const path = e.composedPath ? e.composedPath() : null;
+            return (path && path[0]) || e.target;
+          };
+
+          const visible = el => {
+            if (!el || !el.isConnected) return false;
+            for (let n = el; n && n.nodeType === 1; n = up(n)) {
+              if (n.hidden) return false;
+              const s = getComputedStyle(n);
+              if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+            }
+            if (document.documentElement.getBoundingClientRect().width > 0) {
+              const r = el.getBoundingClientRect();
+              if (r.width < 1 || r.height < 1) return false;
+            }
+            return true;
+          };
+
+          const TEXTY = new Set(['text', 'email', 'tel']);
+
+          // ---- rules for single sites (pass/rules.json) ----
+
+          const rulesNow = () => {
+            const out = { exclude: [], login: [] };
+            try {
+              const host = location.hostname.toLowerCase();
+              const path = location.pathname;
+              for (const key of Object.keys(RULES)) {
+                const slash = key.indexOf('/');
+                const h = (slash < 0 ? key : key.slice(0, slash)).toLowerCase();
+                const p = slash < 0 ? '' : key.slice(slash);
+                if (!h || (host !== h && !host.endsWith('.' + h))) continue;
+                if (p && !path.startsWith(p)) continue;
+                const r = RULES[key];
+                if (r && Array.isArray(r.exclude)) out.exclude.push(...r.exclude.filter(x => typeof x === 'string'));
+                if (r && Array.isArray(r.login)) out.login.push(...r.login);
+              }
+            } catch (e) {}
+            return out;
+          };
+
+          // A path of selectors, each one looked for inside the one before it: in its own tree first,
+          // then in its shadow root. A single selector may be given as a plain string.
+          const find = path => {
+            let node = document;
+            for (const sel of (typeof path === 'string' ? [path] : (Array.isArray(path) ? path : []))) {
+              if (typeof sel !== 'string') return null;
+              let hit = null;
+              try { hit = node.querySelector(sel) || (node.shadowRoot && node.shadowRoot.querySelector(sel)); } catch (e) {}
+              if (!hit) return null;
+              node = hit;
+            }
+            return node === document ? null : node;
+          };
+
+          // Inputs of a page or form, minus whatever the site's rules leave out.
+          const inputs = root => {
+            const all = inputsIn(root);
+            const ex = rulesNow().exclude;
+            return ex.length ? all.filter(i => !ex.some(s => closestDeep(i, s))) : all;
+          };
+
+          // ---- what a field is ----
+
+          const PWNAME = /pass(word|wd)|mật khẩu/i;
+          const attrs = i => (i.name || '') + ' ' + (i.id || '') + ' ' + (i.getAttribute('aria-label') || '') + ' ' + (i.getAttribute('placeholder') || '');
+
+          // A password field: type password, drawn masked, or switched to text to be shown but still
+          // marked as a password. (The same test is in HasPassword below.)
+          const isPw = i => {
+            if (i.type === 'password') return true;
+            if (i.type !== 'text') return false;
+            const mark = (i.getAttribute('autocomplete') || '').toLowerCase();
+            if (mark === 'current-password' || mark === 'new-password') return true;
+            try {
+              const t = getComputedStyle(i).webkitTextSecurity;
+              if (t && t !== 'none') return true;
+            } catch (e) {}
+            return PWNAME.test(attrs(i));
+          };
+
+          const userFor = (pw, list) => {
+            const before = list.slice(0, Math.max(0, list.indexOf(pw))).filter(i =>
+              TEXTY.has(i.type) && !isPw(i) && visible(i) && i.value.trim().length > 0 && i.value.length <= MAX);
+            if (!before.length) return '';
+            const marked = before.filter(i => /(^|\s)(username|email)(\s|$)/i.test(i.getAttribute('autocomplete') || ''));
+            return (marked.length ? marked[marked.length - 1] : before[before.length - 1]).value.trim();
+          };
+
+          // A user name left in a field the page hides, marked as the user name the way password
+          // managers expect: a password page often keeps the user name of the step before there.
+          const hiddenUser = list => {
+            const found = list.filter(i =>
+              !visible(i) && !isPw(i) && i.value.trim().length > 0 && i.value.length <= MAX &&
+              /(^|\s)username(\s|$)/i.test(i.getAttribute('autocomplete') || ''));
+            return found.length ? found[found.length - 1].value.trim() : '';
+          };
+
+          // The first step of a two-step login: a page with no password field and a filled field that
+          // looks like a user name. A search box or a plain text box does not look like one. Besides
+          // type, autocomplete, name and id, what the field says about itself counts (aria-label,
+          // placeholder), unless it talks about searching.
+          const IDENT = /user|e-?mail|login|ident|account|phone|tel/i;
+          const SAYS = /user ?name|e-?mail|log.?in|phone|identifier|đăng nhập|tài khoản|điện thoại/i;
+          const SEARCH = /search|tìm kiếm/i;
+          const looksUser = i => {
+            if (i.type === 'email' || /(^|\s)(username|email)(\s|$)/i.test(i.getAttribute('autocomplete') || '')) return true;
+            if (IDENT.test((i.name || '') + ' ' + (i.id || ''))) return true;
+            const says = (i.getAttribute('aria-label') || '') + ' ' + (i.getAttribute('placeholder') || '');
+            return SAYS.test(says) && !SEARCH.test(says);
+          };
+
+          let lastStep = null;
+          const step = list => {
+            const found = list.filter(i =>
+              TEXTY.has(i.type) && !isPw(i) && visible(i) && i.value.trim().length > 0 && i.value.length <= MAX && looksUser(i));
+            if (!found.length) return;
+            const u = found[found.length - 1].value.trim();
+            const now = Date.now();
+            if (lastStep && lastStep.u === u && now - lastStep.at < 1500) return;
+            lastStep = { u: u, at: now };
+            post({ t: 'user', u: u });
+          };
+
+          const watch = (el, id) => {
+            let n = 0;
+            const t = setInterval(() => {
+              n++;
+              if (!el.isConnected || !visible(el)) { clearInterval(t); post({ t: 'gone', id: id }); }
+              else if (n >= 20) clearInterval(t);
+            }, 400);
+          };
+
+          // The login a site's own rule names, if its password field is on show and filled. The user
+          // name field of a rule may be hidden: that is what a rule is often for.
+          const ruled = () => {
+            for (const r of rulesNow().login) {
+              if (!r || !r.pass) continue;
+              const pw = find(r.pass);
+              if (!pw || pw.tagName !== 'INPUT' || !visible(pw) || pw.value.length === 0 || pw.value.length > MAX) continue;
+              const uf = r.user ? find(r.user) : null;
+              const u = uf && uf.tagName === 'INPUT' && uf.value.trim().length <= MAX ? uf.value.trim() : '';
+              return { pw: pw, u: u };
+            }
+            return null;
+          };
+
+          // ---- which password is which, and what kind of form it is ----
+
+          const squash = t => (t || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 120);
+
+          // What a field says about itself: its label, placeholder, name and id.
+          const labelsOf = i => {
+            const out = [i.getAttribute('aria-label'), i.getAttribute('placeholder'), i.name, i.id];
+            try { for (const l of Array.from(i.labels || [])) out.push(l.textContent); } catch (e) {}
+            try {
+              const root = i.getRootNode();
+              for (const id of (i.getAttribute('aria-labelledby') || '').split(/\s+/)) {
+                const el = id && root.getElementById ? root.getElementById(id) : null;
+                if (el) out.push(el.textContent);
+              }
+            } catch (e) {}
+            // Names are written new_password or newPassword: made into words, so \b can see them.
+            return out.map(t => squash((t || '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_.\[\]]+/g, ' '))).join(' ');
+          };
+
+          const RE_CONFIRM = /\b(confirm|repeat|retype|re-?enter|again|verify)\b|nhập lại|xác nhận|lặp lại/;
+          const RE_CURRENT = /\b(current|existing|old|previous)\b|hiện tại|mật khẩu cũ/;
+          const RE_NEW = /\b(new|create|choose)\b|mật khẩu mới/;
+
+          // 'cur' (the password in use now), 'new', 'confirm', or '' when nothing says.
+          const roleOf = i => {
+            const mark = (i.getAttribute('autocomplete') || '').toLowerCase();
+            const text = labelsOf(i);
+            if (RE_CONFIRM.test(text)) return 'confirm';
+            if (mark === 'new-password' || RE_NEW.test(text)) return 'new';
+            if (mark === 'current-password' || RE_CURRENT.test(text)) return 'cur';
+            return '';
+          };
+
+          const RE_LOGIN = /\b(log ?in|sign ?in|login|welcome back)\b|đăng nhập/;
+          const RE_REGISTER = /\b(sign ?up|register|create (an |your )?account|join|get started|new account)\b|đăng ký|tạo tài khoản/;
+          const RE_CHANGE = /\b(change|update|reset|set|choose|create) (a |your |the |new )*password\b|\bpassword (change|reset|update)\b|đổi mật khẩu|đặt lại mật khẩu|cập nhật mật khẩu/;
+          const RE_FORGOT = /forgot|lost (your )?password|quên mật khẩu/;
+          const RE_REMEMBER = /remember|keep me|stay (signed|logged)|ghi nhớ|duy trì/;
+          const RE_TERMS = /\bterms\b|privacy|i agree|điều khoản|chính sách|tôi đồng ý/;
+
+          // The kind of form, from its own words: 'login', 'register', 'change', or '' when it is not
+          // clear (the two best kinds are less than 2 points apart). It only reads text the person
+          // can see and counts a button's label most. This is the one place that judges a form, so a
+          // better judge can be put here without touching the rest.
+          const classify = container => {
+            const root = container && container.querySelectorAll ? container : document;
+            const score = { login: 0, register: 0, change: 0 };
+            const vote = (text, points) => {
+              if (RE_LOGIN.test(text)) score.login += points;
+              if (RE_REGISTER.test(text)) score.register += points;
+              if (RE_CHANGE.test(text)) score.change += points;
+            };
+
+            // Headings in the form, or in the nearest parent that has any (up to three levels up).
+            const HEAD = 'h1, h2, h3, h4, legend, [role="heading"]';
+            let heads = [];
+            for (let n = root, k = 0; n && k < 4; n = n.parentElement || n.host || null, k++) {
+              heads = Array.from(n.querySelectorAll(HEAD)).filter(visible).slice(0, 3);
+              if (heads.length || n === document) break;
+            }
+            heads.forEach(h => vote(squash(h.textContent), 2));
+            vote(squash(document.title), 1);
+
+            const label = el => squash((el.getAttribute('aria-label') || '') + ' ' + (el.tagName === 'INPUT' ? el.value || '' : '') + ' ' + (el.textContent || ''));
+            Array.from(root.querySelectorAll('button, input[type="submit"], [role="button"]')).filter(visible).slice(0, 6)
+              .forEach(b => vote(label(b), 3));
+
+            const links = Array.from(root.querySelectorAll('a[href], [role="link"]')).filter(visible).slice(0, 12).map(a => squash(a.textContent));
+            if (links.some(t => RE_FORGOT.test(t))) score.login += 2;
+
+            const boxes = Array.from(root.querySelectorAll('input[type="checkbox"]')).filter(visible).slice(0, 6)
+              .map(c => squash(labelsOf(c) + ' ' + (c.parentElement ? c.parentElement.textContent : '')));
+            if (boxes.some(t => RE_REMEMBER.test(t))) score.login += 2;
+            if (boxes.some(t => RE_TERMS.test(t)) || (root !== document && RE_TERMS.test(squash(root.textContent)))) score.register += 2;
+
+            const roles = shownPw(root).map(roleOf);
+            if (roles.includes('cur') && roles.includes('new')) score.change += 3;
+            if (roles.includes('confirm')) { score.register += 1; score.change += 1; }
+
+            const ranked = Object.keys(score).sort((a, b) => score[b] - score[a]);
+            return score[ranked[0]] > 0 && score[ranked[0]] - score[ranked[1]] >= 2 ? ranked[0] : '';
+          };
+
+          const shownPw = root => inputs(root).filter(i => isPw(i) && visible(i));
+
+          let seq = 0;
+          let last = null;
+          // strict: the click came from something that is not a button, so it only counts when a
+          // filled password field is on show (it never starts the guess about a first step).
+          const offer = (container, strict) => {
+            const root = container && container.querySelectorAll ? container : document;
+            const rule = ruled();
+            const list = inputs(rule ? document : root);
+            let pick = null;
+            let old = null;
+            let u = '';
+            if (rule) {
+              pick = rule.pw;
+              u = rule.u;
+            } else {
+              const shown = list.filter(i => isPw(i) && visible(i));
+              if (shown.length === 0) { if (!strict) step(list); return; }
+              const pws = shown.filter(i => i.value.length > 0);
+              const current = pws.filter(i => roleOf(i) === 'cur');
+              const fresh = pws.filter(i => roleOf(i) === 'new' || roleOf(i) === 'confirm');
+              if (current.length === 1 && fresh.length >= 1 && fresh.every(i => i.value === fresh[0].value) &&
+                  fresh[0].value !== current[0].value) {
+                // A change-password form that says which field is which: the old password and the new one.
+                old = current[0].value;
+                pick = fresh[0];
+              } else if (pws.length === 1) pick = pws[0];
+              else if (pws.length === 2 && pws[0].value === pws[1].value) pick = pws[0];
+              else if (pws.length === 2 && pws.every(i => roleOf(i) === '') && classify(root) === 'change') {
+                // Nothing marks the two fields, but the form says it changes the password: the old one, then the new.
+                old = pws[0].value;
+                pick = pws[1];
+              }
+              else if (pws.length === 3 && pws[1].value === pws[2].value && pws[0].value !== pws[1].value) {
+                // Old password, then the new one twice.
+                old = pws[0].value;
+                pick = pws[1];
+              }
+            }
+            if (!pick || pick.value.length > MAX || (old !== null && old.length > MAX)) return;
+            u = u || userFor(pick, list) || hiddenUser(list);
+            // One login often makes two reports at once (Enter, then the click the browser
+            // makes on the button): the second is the same login and is left out.
+            const now = Date.now();
+            if (last && last.u === u && last.p === pick.value && last.o === old && now - last.at < 1500) return;
+            last = { u: u, p: pick.value, o: old, at: now };
+            const id = ++seq;
+            const report = { t: 'offer', id: id, u: u, p: pick.value };
+            if (old !== null) report.o = old;
+            post(report);
+            watch(pick, id);
+          };
+
+          // Buttons that are not a sign-in: closing a dialog after typing, going back, or the eye
+          // that shows the password. Only a short label counts (a long sentence is not a button name).
+          const NOT_SIGNIN = /\b(cancel|close|dismiss|back)\b|\b(show|hide|reveal)\b.*\bpassword\b|\bpassword\b.*\b(show|hide|visible)\b|hủy|huỷ|đóng|quay lại|hiện mật khẩu|ẩn mật khẩu|取消|キャンセル|annuler|abbrechen|cancelar|fermer|schlie[sß]en|cerrar/i;
+          const notSignin = el => {
+            const label = ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' +
+              (el.tagName === 'INPUT' ? el.value || '' : '') + ' ' + (el.textContent || '')).replace(/\s+/g, ' ').trim();
+            return label.length <= 40 && NOT_SIGNIN.test(label);
+          };
+
+          // Something that is not a button but is made to be clicked like one (a styled div or span).
+          const clickable = t => {
+            if (closestDeep(t, 'a[href], label, input, select, textarea, option')) return null;
+            let n = t;
+            for (let i = 0; n && i < 4; i++, n = up(n)) {
+              if (n.tagName === 'FORM' || n.tagName === 'BODY' || n.tagName === 'HTML') return null;
+              try { if (getComputedStyle(n).cursor === 'pointer') return n; } catch (e) {}
+            }
+            return null;
+          };
+
+          document.addEventListener('click', e => {
+            if (!e.isTrusted) return;
+            const t = target(e);
+            if (!t || !t.matches) return;
+            let el = closestDeep(t, 'button, input[type="submit"], input[type="image"], [role="button"]');
+            let strict = false;
+            if (!el) { el = clickable(t); strict = true; }
+            if (!el || (el.tagName === 'BUTTON' && el.type === 'reset')) return;
+            if (notSignin(el)) return;
+            offer(closestDeep(el, 'form') || document, strict);
+          }, true);
+
+          document.addEventListener('keydown', e => {
+            if (!e.isTrusted || e.isComposing || e.key !== 'Enter') return;
+            const el = target(e);
+            if (!el || el.tagName !== 'INPUT') return;
+            offer(closestDeep(el, 'form') || document);
+          }, true);
+
+          // ---- the key at a login field (the window draws it) ----
+          //
+          // The page only says where the field that has the focus is, and what kind it is. The window
+          // draws the key and the list of saved logins over the page, so the page can neither read
+          // nor fake them, and nothing here fills anything. Only real focus and pointer events count.
+
+          // The field takes a one-time code (the 6 digits of an authenticator app): the browser's own mark for
+          // it, or what the field says about itself.
+          const RE_OTP = /\b(otp|totp|2fa|mfa|authenticator|one[ -]?time|two[ -]?factor|verification code|authentication code|security code|sms code|[68][ -]?digit)\b|mã xác (minh|thực)|mã otp|xác thực hai/;
+          const wantsCode = el => (el.getAttribute('autocomplete') || '').toLowerCase() === 'one-time-code' || RE_OTP.test(labelsOf(el));
+
+          // What a field of a payment or contact form is for, from the browser's own mark (autocomplete) or, for
+          // a card, from what the field says about itself. The vocabulary is that of the saved fields
+          // (vault/items.cs): number, holder, expiry, month, year, cvc; first, last, name, phone, street, ...
+          const TOKENS = {
+            'cc-number': 'number', 'cc-name': 'holder', 'cc-exp': 'expiry', 'cc-exp-month': 'month', 'cc-exp-year': 'year', 'cc-csc': 'cvc',
+            'given-name': 'first', 'family-name': 'last', 'name': 'name', 'tel': 'phone', 'tel-national': 'phone', 'organization': 'org',
+            'street-address': 'street', 'address-line1': 'street', 'address-line2': 'street2', 'address-level2': 'city',
+            'address-level1': 'state', 'postal-code': 'zip', 'country': 'country', 'country-name': 'country',
+          };
+          const CARD_ROLES = new Set(['number', 'holder', 'expiry', 'month', 'year', 'cvc']);
+          const CARD_WORDS = [
+            [/\b(card ?number|credit card|cc ?num(ber)?)\b/, 'number'],
+            [/\b(name on card|card ?holder)\b/, 'holder'],
+            [/\b(cvc|cvv|csc|card code|card security code)\b/, 'cvc'],
+            [/\b(exp\w* ?(month|mm)|card ?month)\b/, 'month'],
+            [/\b(exp\w* ?(year|yy)|card ?year)\b/, 'year'],
+            [/\b(expiry|expiration|exp date|valid thru|mm ?\/ ?yy)\b/, 'expiry'],
+          ];
+          const ID_WORDS = [
+            [/\b(first|given) ?name\b/, 'first'], [/\b(last|family|sur) ?name\b/, 'last'], [/\b(phone|mobile|telephone)\b/, 'phone'],
+            [/\be-?mail\b/, 'email'], [/\b(zip|postal|post ?code)\b/, 'zip'], [/\b(city|town)\b/, 'city'], [/\b(street|address)\b/, 'street'],
+          ];
+          const tokenOf = el => (el.getAttribute('autocomplete') || '').toLowerCase().trim().split(/\s+/).pop() || '';
+          const roleByWords = (el, words) => {
+            const text = labelsOf(el);
+            for (const [re, role] of words) if (re.test(text)) return role;
+            return '';
+          };
+          // The role of a field in a card form ('' when it is not one).
+          const cardRole = el => {
+            const t = TOKENS[tokenOf(el)];
+            return t && CARD_ROLES.has(t) ? t : roleByWords(el, CARD_WORDS);
+          };
+          // The role of a field in a contact form: only from the browser's mark, or, when the form has at
+          // least three such fields by words, from the words.
+          const idRole = (el, box) => {
+            const t = TOKENS[tokenOf(el)];
+            if (t && !CARD_ROLES.has(t)) return t;
+            const w = roleByWords(el, ID_WORDS);
+            if (!w) return '';
+            const roles = new Set(inputs(box).filter(i => TEXTY.has(i.type) && !isPw(i)).map(i => roleByWords(i, ID_WORDS)).filter(Boolean));
+            return roles.size >= 3 ? w : '';
+          };
+
+          // A field the key may sit at: shown, writable, not left out by a site rule, big enough to carry it.
+          const usableField = el => !!el && el.tagName === 'INPUT' && !el.readOnly && !el.disabled &&
+            (isPw(el) || TEXTY.has(el.type) || el.type === 'number') && visible(el) &&
+            !rulesNow().exclude.some(s => closestDeep(el, s));
+
+          // 'login' (a user name or password to fill in), 'new' (a password being chosen), 'otp' (a one-time
+          // code), 'card' (a payment card), 'identity' (name, address, phone) or '' (no key).
+          const kindOf = el => {
+            if (!usableField(el)) return '';
+            const box = closestDeep(el, 'form') || document;
+            if (isPw(el)) {
+              const role = roleOf(el);
+              if (role === 'new' || role === 'confirm') return 'new';
+              if (role === 'cur') return 'login';
+              return classify(box) === 'register' ? 'new' : 'login';
+            }
+            // A card form (what the field says, or the form has a card number), before a code: "security code" is both.
+            const role = cardRole(el);
+            if (role && (role !== 'cvc' || TOKENS[tokenOf(el)] || inputs(box).some(i => cardRole(i) === 'number'))) return 'card';
+            if (!role && /\bsecurity code\b/.test(labelsOf(el)) && inputs(box).some(i => cardRole(i) === 'number')) return 'card';
+            if (wantsCode(el)) return 'otp';
+            if (idRole(el, box) && shownPw(box).length === 0) return 'identity';
+            if (el.type === 'number') return '';
+            if (SEARCH.test(attrs(el))) return '';
+            // A user name field: no key in a sign-up or change-password form.
+            const form = classify(box);
+            if (form === 'register' || form === 'change') return '';
+            // The field right before a password field of the same form or page, or one that says it is a user name.
+            const list = inputs(box);
+            const next = list.slice(list.indexOf(el) + 1).find(i => isPw(i) && visible(i));
+            if (next) {
+              const between = list.slice(list.indexOf(el) + 1, list.indexOf(next)).filter(i => TEXTY.has(i.type) && !isPw(i) && visible(i));
+              if (between.length === 0) return 'login';
+            }
+            return looksUser(el) ? 'login' : '';
+          };
+
+          const rectOf = el => {
+            const r = el.getBoundingClientRect();
+            return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+          };
+
+          // ---- a field inside a frame: the top page tells where the frame is ----
+          //
+          // A frame says (through its own channel to the window) what kind of field has the focus, and posts the
+          // field's box to this page, which alone can see where the frame sits. This page turns the box into
+          // the top page's own coordinates and sends it to the window. All that is sent is a rectangle and the
+          // frame's name (fid): a page that forges these can only move a key, because what is listed and filled
+          // is decided from the address the frame itself reported, and goes only into that frame.
+
+          let cardFrames = false;   // a frame said it holds card fields: a press in this page may be its Pay button
+          let fr = null;        // { fid, src, r }: the field of a frame that has the focus
+          let frSaid = '';
+          let frPoll = null;
+
+          const framesIn = () => {
+            const out = [];
+            const stack = [document.documentElement];
+            while (stack.length) {
+              const n = stack.pop();
+              if (n.tagName === 'IFRAME') out.push(n);
+              if (n.shadowRoot) for (let c = n.shadowRoot.firstElementChild; c; c = c.nextElementSibling) stack.push(c);
+              for (let c = n.firstElementChild; c; c = c.nextElementSibling) stack.push(c);
+            }
+            return out;
+          };
+
+          // The frame element of this page that a window is the contents of (null: not a frame of this page).
+          const frameOf = src => framesIn().find(f => { try { return f.contentWindow === src; } catch (e) { return false; } }) || null;
+
+          // The field's box in this page's pixels, clipped to the frame's own box; null when the frame is not on show.
+          const frameBox = () => {
+            if (!fr) return null;
+            const el = frameOf(fr.src);
+            if (!el || !visible(el)) return null;
+            const b = el.getBoundingClientRect();
+            const cs = getComputedStyle(el);
+            const s = el.offsetWidth > 0 ? b.width / el.offsetWidth : 1;
+            const ox = b.left + ((el.clientLeft || 0) + (parseFloat(cs.paddingLeft) || 0)) * s;
+            const oy = b.top + ((el.clientTop || 0) + (parseFloat(cs.paddingTop) || 0)) * s;
+            const x0 = Math.max(ox + fr.r[0] * s, b.left);
+            const y0 = Math.max(oy + fr.r[1] * s, b.top);
+            const x1 = Math.min(ox + (fr.r[0] + fr.r[2]) * s, b.right);
+            const y1 = Math.min(oy + (fr.r[1] + fr.r[3]) * s, b.bottom);
+            if (!(x1 > x0 && y1 > y0)) return null;
+            return [Math.round(x0), Math.round(y0), Math.round(x1 - x0), Math.round(y1 - y0)];
+          };
+
+          const frReport = () => {
+            if (!fr) return;
+            const r = frameBox();
+            const o = r ? { t: 'frect', fid: fr.fid, r: r, v: window.innerWidth } : { t: 'frect', fid: fr.fid, r: null };
+            const sig = JSON.stringify(o);
+            if (sig !== frSaid) { frSaid = sig; post(o); }
+          };
+
+          // The frame's field is gone (the frame said so, the person clicked in this page, or the frame left the screen).
+          const dropFrame = () => {
+            if (!fr) return;
+            const fid = fr.fid;
+            fr = null;
+            frSaid = '';
+            if (frPoll !== null) { clearInterval(frPoll); frPoll = null; }
+            post({ t: 'frect', fid: fid, r: null });
+          };
+
+          if (!inFrame) {
+            window.addEventListener('message', e => {
+              try {
+                const d = e.data;
+                if (!d || typeof d !== 'object') return;
+                if (d.neatcard === TOKEN) {
+                  // Says only that: no number, no field. A page may forge it, and then a press of a button makes the window look.
+                  if (e.source && e.source !== window && frameOf(e.source)) cardFrames = true;
+                  return;
+                }
+                if (d.neat !== TOKEN || typeof d.fid !== 'string' || d.fid.length === 0 || d.fid.length > 80) return;
+                if (!e.source || e.source === window) return;
+                if (d.r === null) {
+                  if (fr && fr.fid === d.fid && fr.src === e.source) dropFrame();
+                  return;
+                }
+                if (!Array.isArray(d.r) || d.r.length !== 4 || !d.r.every(n => typeof n === 'number' && isFinite(n) && Math.abs(n) < 100000)) return;
+                if (!frameOf(e.source)) return;
+                if (fr && fr.src !== e.source) dropFrame();
+                fr = { fid: d.fid, src: e.source, r: d.r.slice() };
+                if (frPoll === null) frPoll = setInterval(() => { if (!fr) return; if (!frameBox()) dropFrame(); else frReport(); }, 400);
+                if (!frameBox()) dropFrame(); else frReport();
+              } catch (err) {}
+            });
+          }
+
+          let at = null;       // the field the window was last told about
+          let said = '{"t":"field","r":null}';   // what it was told, to say nothing twice (it starts knowing "no field")
+          let rectNow = '';
+          let poll = null;
+          let pointerAt = 0;
+
+          // v is the page's width in its own pixels: the window divides its own width by it to find the zoom.
+          // Tells the window which field has the focus, or that none has (el = null). click: the focus
+          // came from the person pressing the pointer on the field, which is when the window may open the list.
+          const report = (el, click) => {
+            let k = el ? kindOf(el) : '';
+            const r = k ? rectOf(el) : null;
+            // Too small to carry a key (a box of a code split in digits is small, and may still open the list).
+            const least = k === 'otp' ? 20 : 60;
+            if (r && (r[2] < least || r[3] < 18) && document.documentElement.getBoundingClientRect().width > 0) k = '';
+            at = k ? el : null;
+            if (k) dropFrame();
+            rectNow = k ? JSON.stringify(r) : '';
+            const o = k ? { t: 'field', k: k, r: r, v: window.innerWidth } : { t: 'field', r: null };
+            const sig = JSON.stringify(o);
+            if (sig !== said || (click && k)) {
+              if (k && click) o.c = 1;
+              said = sig;
+              if (inFrame) {
+                // Where the field is on the page is known only to the top page, which can see the frame's box:
+                // the box goes there (a rectangle, nothing else), and what kind of field it is goes to the window.
+                try { window.parent.postMessage({ neat: TOKEN, fid: FID, r: o.r, v: o.v }, '*'); } catch (e) {}
+                const h = k ? { t: 'field', k: k } : { t: 'field', r: null };
+                if (o.c) h.c = 1;
+                post(h);
+              } else {
+                post(o);
+              }
+            }
+            if (at && poll === null) poll = setInterval(follow, 400);
+            if (!at && poll !== null) { clearInterval(poll); poll = null; }
+          };
+
+          // The field moved (scrolling, a layout change) or went away.
+          const follow = () => {
+            if (!at) return;
+            if (!at.isConnected || !visible(at)) { report(null); return; }
+            if (JSON.stringify(rectOf(at)) !== rectNow) report(at);
+          };
+
+          document.addEventListener('pointerdown', e => {
+            if (!e.isTrusted) return;
+            pointerAt = Date.now();
+            // A press in this page (a press inside a frame never reaches it) leaves the field of a frame.
+            if (fr) dropFrame();
+            // A press on the field that already has the focus gives no focus event: ask again.
+            const t = target(e);
+            if (t && t === at) report(at, true);
+          }, true);
+
+          document.addEventListener('focusin', e => {
+            if (!e.isTrusted) return;
+            const t = target(e);
+            report(t && t.tagName === 'INPUT' ? t : null, Date.now() - pointerAt < 500);
+          }, true);
+
+          // Focus moved to nothing: the person clicked elsewhere in the page. Not when the whole page lost the
+          // focus (the person is using the list the window drew), then the field is still where it was.
+          document.addEventListener('focusout', e => {
+            if (!e.isTrusted) return;
+            setTimeout(() => {
+              if (!document.hasFocus()) return;
+              let a = document.activeElement;
+              while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+              if (!a || a.tagName !== 'INPUT') report(null);
+            }, 0);
+          }, true);
+
+          document.addEventListener('keydown', e => {
+            if (e.isTrusted && e.key === 'Escape' && at) report(null);
+          }, true);
+
+          window.addEventListener('scroll', follow, true);
+          window.addEventListener('resize', follow);
+
+          // ---- a card typed into a payment form ----
+          //
+          // Like a login, a card is reported when the person presses a button or Enter (real events only), and
+          // only if the number passes the check digit. Whether the payment went through is found out afterwards
+          // by the window, which offers to save only when the form has gone away.
+
+          const luhn = s => {
+            let sum = 0;
+            let second = false;
+            for (let i = s.length - 1; i >= 0; i--) {
+              let n = s.charCodeAt(i) - 48;
+              if (second) { n *= 2; if (n > 9) n -= 9; }
+              sum += n;
+              second = !second;
+            }
+            return sum % 10 === 0;
+          };
+
+          let lastCard = null;
+          let cardSeq = 0;
+          const offerCard = container => {
+            const root = container && container.querySelectorAll ? container : document;
+            const by = {};
+            for (const el of inputs(root).concat(Array.from(root.querySelectorAll('select')))) {
+              if (el.tagName === 'INPUT' && isPw(el)) continue;
+              if (!visible(el) || !String(el.value).trim()) continue;
+              const role = cardRole(el);
+              if (role && !by[role]) by[role] = el;
+            }
+            if (!by.number) {
+              // A payment form whose number is in a frame: this press may be its Pay button. The window has what
+              // the frames said; only the name, if it is in this page, is added here.
+              if (!inFrame && cardFrames) post({ t: 'cardsubmit', h: by.holder ? by.holder.value.trim().slice(0, 100) : '' });
+              return;
+            }
+            const raw = by.number.value.trim();
+            const digits = raw.replace(/[ -]/g, '');
+            if (!/^\d{12,19}$/.test(digits) || !luhn(digits)) return;
+            const expiry = by.expiry ? by.expiry.value.trim() : (by.month && by.year ? by.month.value.trim() + '/' + by.year.value.trim() : '');
+            const o = {
+              t: 'card', n: digits, h: by.holder ? by.holder.value.trim().slice(0, 100) : '',
+              e: expiry.slice(0, 12), c: by.cvc ? by.cvc.value.trim().slice(0, 4) : '',
+            };
+            const now = Date.now();
+            if (lastCard && lastCard.n === o.n && now - lastCard.at < 1500) return;
+            lastCard = { n: o.n, at: now };
+            post(o);
+            const field = by.number;
+            const id = ++cardSeq;
+            let ticks = 0;
+            const t = setInterval(() => {
+              ticks++;
+              if (!field.isConnected || !visible(field)) { clearInterval(t); post({ t: 'cardgone', id: id }); }
+              else if (ticks >= 20) clearInterval(t);
+            }, 400);
+          };
+
+          // A frame that holds card fields says what is typed in it, to the window only (and tells the page above that
+          // it holds some, which carries nothing else). The Pay button is usually in the page above: its press
+          // then makes the window put the parts together (cardsubmit, above). Real events only, as everywhere.
+          if (inFrame) {
+            let sentPart = '';
+            const sayPart = e => {
+              if (!e.isTrusted) return;
+              const by = {};
+              for (const el of inputs(document).concat(Array.from(document.querySelectorAll('select')))) {
+                if (el.tagName === 'INPUT' && isPw(el)) continue;
+                if (!visible(el) || !String(el.value).trim()) continue;
+                const role = cardRole(el);
+                if (role && !by[role]) by[role] = el;
+              }
+              const o = { t: 'cardpart' };
+              if (by.number) {
+                const digits = by.number.value.replace(/[ -]/g, '');
+                if (/^\d{12,19}$/.test(digits) && luhn(digits)) o.n = digits;
+              }
+              if (by.holder) o.h = by.holder.value.trim().slice(0, 100);
+              if (by.expiry) o.e = by.expiry.value.trim().slice(0, 12);
+              else if (by.month && by.year) o.e = (by.month.value.trim() + '/' + by.year.value.trim()).slice(0, 12);
+              if (by.cvc) o.c = by.cvc.value.trim().slice(0, 4);
+              if (!o.n && !o.h && !o.e && !o.c) return;
+              const sig = JSON.stringify(o);
+              if (sig === sentPart) return;
+              sentPart = sig;
+              post(o);
+              try { window.parent.postMessage({ neatcard: TOKEN }, '*'); } catch (err) {}
+            };
+            document.addEventListener('change', sayPart, true);
+            document.addEventListener('focusout', sayPart, true);
+          }
+
+          document.addEventListener('click', e => {
+            if (!e.isTrusted) return;
+            const t = target(e);
+            if (!t || !t.matches) return;
+            const el = closestDeep(t, 'button, input[type="submit"], input[type="image"], [role="button"]');
+            if (!el || (el.tagName === 'BUTTON' && el.type === 'reset') || notSignin(el)) return;
+            offerCard(closestDeep(el, 'form') || document);
+          }, true);
+
+          document.addEventListener('keydown', e => {
+            if (!e.isTrusted || e.isComposing || e.key !== 'Enter') return;
+            const el = target(e);
+            if (!el || el.tagName !== 'INPUT') return;
+            offerCard(closestDeep(el, 'form') || document);
+          }, true);
+        })();
+        """;
+
+    /// <summary>
+    /// Run by the window, after a page has loaded, to find out whether a card number field is on show:
+    /// a payment that went through leads to a page without one. The answer is true or false. It is read
+    /// loosely (the browser's mark, or a field that says it is a card number), and when it cannot tell
+    /// it answers true, which only means no offer is made.
+    /// </summary>
+    public const string HasCard = """
+        (() => {
+          try {
+            const up = n => n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
+            const visible = el => {
+              for (let n = el; n && n.nodeType === 1; n = up(n)) {
+                if (n.hidden) return false;
+                const s = getComputedStyle(n);
+                if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+              }
+              if (document.documentElement.getBoundingClientRect().width > 0) {
+                const r = el.getBoundingClientRect();
+                if (r.width < 1 || r.height < 1) return false;
+              }
+              return true;
+            };
+            const says = i => ((i.name || '') + ' ' + (i.id || '') + ' ' + (i.getAttribute('aria-label') || '') + ' ' + (i.getAttribute('placeholder') || '')).toLowerCase();
+            const stack = [document.documentElement];
+            while (stack.length) {
+              const n = stack.pop();
+              if (n.tagName === 'INPUT' && visible(n) &&
+                  (/(^|\s)cc-number(\s|$)/i.test(n.getAttribute('autocomplete') || '') || /card ?-?_?number|cardnumber|cc-?num/.test(says(n)))) return true;
+              if (n.shadowRoot) for (let c = n.shadowRoot.firstElementChild; c; c = c.nextElementSibling) stack.push(c);
+              for (let c = n.firstElementChild; c; c = c.nextElementSibling) stack.push(c);
+            }
+            return false;
+          } catch (e) {
+            return true;
+          }
+        })();
+        """;
+
+    /// <summary>
+    /// Run by the window, after a page has loaded, to find out whether a password field is on
+    /// show: a login that worked leads to a page without one. The answer is true or false.
+    /// (The visibility and password tests are the same as in <see cref="Source"/>.)
+    /// </summary>
+    public const string HasPassword = """
+        (() => {
+          try {
+            const up = n => n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
+            const visible = el => {
+              for (let n = el; n && n.nodeType === 1; n = up(n)) {
+                if (n.hidden) return false;
+                const s = getComputedStyle(n);
+                if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+              }
+              if (document.documentElement.getBoundingClientRect().width > 0) {
+                const r = el.getBoundingClientRect();
+                if (r.width < 1 || r.height < 1) return false;
+              }
+              return true;
+            };
+            const isPw = i => {
+              if (i.type === 'password') return true;
+              if (i.type !== 'text') return false;
+              const mark = (i.getAttribute('autocomplete') || '').toLowerCase();
+              if (mark === 'current-password' || mark === 'new-password') return true;
+              try {
+                const t = getComputedStyle(i).webkitTextSecurity;
+                if (t && t !== 'none') return true;
+              } catch (e) {}
+              return /pass(word|wd)|mật khẩu/i.test((i.name || '') + ' ' + (i.id || '') + ' ' + (i.getAttribute('aria-label') || '') + ' ' + (i.getAttribute('placeholder') || ''));
+            };
+            const stack = [document.documentElement];
+            while (stack.length) {
+              const n = stack.pop();
+              if (n.tagName === 'INPUT' && isPw(n) && visible(n)) return true;
+              if (n.shadowRoot) for (let c = n.shadowRoot.firstElementChild; c; c = c.nextElementSibling) stack.push(c);
+              for (let c = n.firstElementChild; c; c = c.nextElementSibling) stack.push(c);
+            }
+            return false;
+          } catch (e) {
+            return true;
+          }
+        })();
+        """;
+}

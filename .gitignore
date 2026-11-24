@@ -1,0 +1,28 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+publish/
+artifacts/
+
+# Visual Studio / editors
+.vs/
+.vscode/
+*.user
+*.suo
+*.userprefs
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+
+# Logs and temp
+*.log
+*.tmp
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Downloaded by tools/fetch-ads.ps1
+/ads-dl/

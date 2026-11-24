@@ -1,0 +1,475 @@
+using Microsoft.UI;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+
+namespace neat;
+
+/// <summary>
+/// Filling a saved login into a page. Nothing fills by itself: not when a page loads, not when a
+/// field is clicked. The person presses the key button in the address chip, or the key over a login
+/// field (win.field.cs; a click on the field may open the list too). Both show only on a page that has
+/// saved logins. The person sees which address the login will go into, and picks one.
+///
+/// The rules, from the plan for the vault:
+///   - Only a login saved for exactly this page's origin (scheme, host and port) is offered, so an
+///     https login never reaches an http page and a look-alike address never gets one. The vault
+///     checks that again when it hands the login over, and the script checks it a third time in the
+///     page itself, because a page can navigate between the click and the fill.
+///   - Only the top page is filled, or the frame that holds the key (win.frames.cs), never another frame; only fields the
+///     person can see and type in.
+///   - The login goes to the page as data (one JSON object), never glued into script text.
+///   - The address the login will go into is shown in the list, in a form that is hard to fake, with a
+///     warning for letters outside a-z (see vault/lookalike.cs) and for an http page.
+///   - Filling needs no Windows Hello: nothing is shown to anyone, it goes into the page that is open.
+///     A password vault must have been unlocked, and this window locks it again after
+///     <see cref="Gate.Idle"/> without a fill, if it was the one that unlocked it.
+/// </summary>
+public sealed partial class Win
+{
+    // The fill list stays up this long if nobody picks.
+    private static readonly TimeSpan FillLife = TimeSpan.FromSeconds(60);
+
+    // At most this many logins are listed for one page.
+    private const int FillMax = 8;
+
+    // The vault has been looked at, for the key button, this run.
+    private bool _vaultTried;
+
+    // This window unlocked a password vault, and when it last filled something.
+    private bool _fillUnlocked;
+    private DateTime _fillLast = DateTime.MinValue;
+    private DispatcherQueueTimer? _fillIdle;
+
+    // ---- the key button ----
+
+    private void keybtn_Click(object sender, RoutedEventArgs e)
+    {
+        _ = Guard(() => OpenFill(), "opening the fill list");
+    }
+
+    /// <summary>Shows the key button when the page in the selected tab has a saved login.</summary>
+    private async Task UpdateKey()
+    {
+        var tab = _cur;
+        var origin = tab is null ? null : Origin.Of(tab.Src);
+        var show = false;
+
+        if (origin is not null)
+        {
+            var vault = App.Vault;
+
+            // A vault that is there is read once, so the button can show before anything else has needed
+            // the vault. A vault that is not there is not made just to look.
+            if (vault.Mode is null && !_vaultTried && vault.FileExists)
+            {
+                _vaultTried = true;
+
+                try
+                {
+                    await Task.Run(() => vault.Open());
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("pass", ex, "opening the vault for the key button failed");
+                }
+            }
+
+            show = vault.Has(origin);
+        }
+
+        // The person may have moved on while the vault was being read.
+        if (_cur == tab && !_closed)
+            keybtn.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ---- the list ----
+
+    private async Task OpenFill(Windows.Foundation.Rect? anchor = null, string what = "login", Via? via = null)
+    {
+        var tab = _cur;
+        var core = tab?.View.CoreWebView2;
+        var origin = core is null ? null : Origin.Of(core.Source);
+        if (tab is null || origin is null)
+            return;
+
+        var vault = App.Vault;
+
+        if (vault.Mode is null)
+        {
+            try
+            {
+                await Task.Run(() => vault.Open());
+            }
+            catch (Exception ex)
+            {
+                Log.Error("pass", ex, "opening the vault failed");
+            }
+
+            if (_cur != tab)
+                return;
+        }
+
+        if (vault.Mode is null)
+        {
+            Bubble("无法打开密码库", "详情见“设置 > 密码”。", FillLife, ("OK", () => HideBubble()));
+            return;
+        }
+
+        if (vault.Mode == VaultMode.Dpapi && !vault.IsOpen)
+        {
+            Bubble("无法打开密码库", "Windows 未能打开密钥。详情见“设置 > 密码”。", FillLife, ("OK", () => HideBubble()));
+            return;
+        }
+
+        if (!vault.IsOpen)
+        {
+            AskFillUnlock(tab, anchor, what, via);
+            return;
+        }
+
+        ListLogins(tab, anchor, what, via);
+    }
+
+    /// <summary>The logins saved for the page in <paramref name="tab"/>, to pick one from.</summary>
+    private void ListLogins(Tab tab, Windows.Foundation.Rect? anchor = null, string what = "login", Via? via = null)
+    {
+        // A card or an identity belongs to no site: its own list (win.items.cs).
+        if (what is "card" or "identity")
+        {
+            ListItems(tab, anchor, what, via);
+            return;
+        }
+
+        var otp = what == "otp";
+
+        var core = tab.View.CoreWebView2;
+        var top = core is null ? null : Origin.Of(core.Source);
+        if (top is null)
+            return;
+
+        // The address the logins are for: the frame's own when the field is in a frame.
+        var origin = via?.Origin ?? top;
+
+        var logins = App.Vault.Find(origin).Where(l => !l.Damaged && (!otp || l.Otp)).Take(FillMax).ToList();
+        if (logins.Count == 0)
+        {
+            Bubble(otp ? "此网站没有一次性验证码密钥" : "此网站没有已保存的登录信息", string.Empty, TimeSpan.FromSeconds(3), ("OK", () => HideBubble()));
+            return;
+        }
+
+        _fillLast = DateTime.UtcNow;
+
+        var panel = new StackPanel { Spacing = 8 };
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = otp ? "Fill a one-time code" : "Fill a saved login",
+            FontSize = 14,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+        });
+
+        // The address the login will go into, as the person should read it.
+        AddWhere(panel, via, top);
+
+        foreach (var login in logins)
+        {
+            var who = login.User.Length == 0 ? "（无用户名）" : login.User;
+            var id = login.Id;
+
+            var b = new Button
+            {
+                Content = who,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+            };
+            b.Click += (s, e) => _ = Guard(() => otp ? FillCode(tab, id, via) : FillWith(tab, id, via), "filling a login");
+            panel.Children.Add(b);
+        }
+
+        var cancel = new Button { Content = "Cancel", HorizontalAlignment = HorizontalAlignment.Right };
+        cancel.Click += (s, e) => HideBubble();
+        panel.Children.Add(cancel);
+
+        Present(panel, FillLife, anchor);
+    }
+
+    private static TextBlock Warn(string text)
+    {
+        return new TextBlock
+        {
+            Text = text,
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Colors.Orange),
+            TextWrapping = TextWrapping.Wrap,
+        };
+    }
+
+    /// <summary>
+    /// The lines of a list that say where a pick goes: the address as it should be read, with a warning for an
+    /// http page or letters outside a-z, for the frame and, when it is in a frame, for the page above it too.
+    /// </summary>
+    private static void AddWhere(StackPanel panel, Via? via, string top)
+    {
+        panel.Children.Add(new TextBlock
+        {
+            Text = IntoLine(via, top),
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+        });
+
+        foreach (var origin in via is null ? new[] { top } : new[] { via.Origin, top })
+        {
+            if (origin.StartsWith("http://", StringComparison.Ordinal))
+            {
+                panel.Children.Add(Warn("此页面不安全（http）：输入的内容可能在传输途中被读取。"));
+                break;
+            }
+        }
+
+        foreach (var origin in via is null ? new[] { top } : new[] { via.Origin, top })
+        {
+            if (Lookalike.Warning(origin) is { } warning)
+            {
+                panel.Children.Add(Warn(warning));
+                break;
+            }
+        }
+    }
+
+    // ---- unlocking a password vault ----
+
+    private void AskFillUnlock(Tab tab, Windows.Foundation.Rect? anchor = null, string what = "login", Via? via = null)
+    {
+        var box = new PasswordBox { PlaceholderText = "NEAT password" };
+        var message = new TextBlock { FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
+
+        async Task Go()
+        {
+            var typed = box.Password;
+            if (typed.Length == 0)
+                return;
+
+            message.Text = "Checking...";
+            var result = await Task.Run(() => App.Vault.Unlock(typed.AsSpan()));
+            box.Password = string.Empty;
+
+            if (result == VaultResult.Ok)
+            {
+                _fillUnlocked = true;
+                _fillLast = DateTime.UtcNow;
+                StartFillIdle();
+
+                if (_cur == tab)
+                    ListLogins(tab, anchor, what, via);
+
+                return;
+            }
+
+            message.Text = result switch
+            {
+                VaultResult.Wrong => "密码不正确。",
+                VaultResult.Wait => "Too many wrong tries. Try again in "
+                    + Math.Max(1, (int)Math.Ceiling(App.Vault.RetryAfter.TotalSeconds)) + " seconds.",
+                _ => "That did not work.",
+            };
+        }
+
+        box.KeyDown += (s, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Enter)
+                _ = Guard(Go, "unlocking the vault");
+        };
+
+        var unlock = new Button { Content = "Unlock" };
+        unlock.Click += (s, e) => _ = Guard(Go, "unlocking the vault");
+
+        var cancel = new Button { Content = "Cancel" };
+        cancel.Click += (s, e) => HideBubble();
+
+        var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+        bar.Children.Add(unlock);
+        bar.Children.Add(cancel);
+
+        var panel = new StackPanel { Spacing = 10 };
+        panel.Children.Add(new TextBlock { Text = "你的密码库已锁定", FontSize = 14 });
+        panel.Children.Add(box);
+        panel.Children.Add(message);
+        panel.Children.Add(bar);
+
+        Present(panel, FillLife, anchor);
+    }
+
+    private void StartFillIdle()
+    {
+        _fillIdle ??= MakeFillIdle();
+        _fillIdle.Start();
+    }
+
+    private DispatcherQueueTimer MakeFillIdle()
+    {
+        var t = DispatcherQueue.CreateTimer();
+        t.Interval = TimeSpan.FromSeconds(15);
+        t.IsRepeating = true;
+        t.Tick += (s, e) =>
+        {
+            var vault = App.Vault;
+
+            // Someone else (Settings) shut it, or switched it to Windows protection: nothing left to watch.
+            if (!_fillUnlocked || vault.Mode != VaultMode.Password || !vault.IsOpen)
+            {
+                _fillUnlocked = false;
+                t.Stop();
+                return;
+            }
+
+            if (DateTime.UtcNow - _fillLast > Gate.Idle)
+            {
+                vault.Lock();
+                _fillUnlocked = false;
+                t.Stop();
+            }
+        };
+
+        return t;
+    }
+
+    // ---- filling ----
+
+    private async Task FillWith(Tab tab, Guid id, Via? via = null)
+    {
+        HideBubble();
+
+        var core = tab.View.CoreWebView2;
+        if (core is null || _cur != tab)
+            return;
+
+        // The page as it is right now. The vault hands a login out only if this is exactly the origin it was
+        // saved for, and the script checks again from inside the page.
+        var page = via?.Origin ?? core.Source;
+        var origin = Origin.Of(page);
+        var above = Above(core, via);
+        if (via is not null && above is null)
+            return;
+
+        string script;
+        using (var fill = origin is null ? null : App.Vault.Fill(id, page))
+        {
+            if (fill is null || origin is null)
+            {
+                Bubble("Could not fill", "该登录信息不属于当前打开的页面。", TimeSpan.FromSeconds(4), ("OK", () => HideBubble()));
+                return;
+            }
+
+            script = FillScript.For(origin, fill.User, fill.Password.Text(), above);
+        }
+
+        _fillLast = DateTime.UtcNow;
+
+        string answer;
+        try
+        {
+            answer = await RunIn(core, via, script);
+        }
+        catch (Exception ex)
+        {
+            // The kind only: the script text holds the password.
+            Log.Write("pass", "filling failed (" + ex.GetType().Name + ")");
+            Bubble("Could not fill", "The page did not accept it.", TimeSpan.FromSeconds(4), ("OK", () => HideBubble()));
+            return;
+        }
+
+        var said = answer.Trim('"') switch
+        {
+            "user+pass" => "Filled",
+            "pass" => "Password filled",
+            "user" => "User name filled. Fill again on the next page for the password.",
+            "none" => "There is no login form here that can be filled.",
+            "origin" => "The page changed, so nothing was filled.",
+            "frame" => "Nothing was filled.",
+            _ => "Could not fill this page.",
+        };
+
+        // The list took the keyboard from the page: give it back, so typing goes on where it was.
+        try
+        {
+            tab.View.Focus(FocusState.Programmatic);
+        }
+        catch (Exception)
+        {
+        }
+
+        Bubble(said, string.Empty, TimeSpan.FromSeconds(2.5));
+    }
+
+    // ---- one-time codes ----
+
+    /// <summary>Puts the one-time code of a saved login into the field that has the focus.</summary>
+    private async Task FillCode(Tab tab, Guid id, Via? via = null)
+    {
+        HideBubble();
+
+        var core = tab.View.CoreWebView2;
+        if (core is null || _cur != tab)
+            return;
+
+        var page = via?.Origin ?? core.Source;
+        var origin = Origin.Of(page);
+        var above = Above(core, via);
+        if (origin is null || (via is not null && above is null))
+            return;
+
+        var code = App.Vault.Code(id, page, DateTimeOffset.UtcNow);
+
+        // A code that ends in a moment may be refused by the time the person sends it: take the next one.
+        if (code is { SecondsLeft: < 3 })
+        {
+            await Task.Delay(TimeSpan.FromSeconds(code.SecondsLeft) + TimeSpan.FromMilliseconds(300));
+
+            if (_cur != tab)
+                return;
+
+            code = App.Vault.Code(id, page, DateTimeOffset.UtcNow);
+        }
+
+        if (code is null)
+        {
+            Bubble("Could not fill", "That login has no code for the page that is open now.", TimeSpan.FromSeconds(4), ("OK", () => HideBubble()));
+            return;
+        }
+
+        _fillLast = DateTime.UtcNow;
+
+        string answer;
+        try
+        {
+            answer = await RunIn(core, via, OtpScript.For(origin, code.Code, above));
+        }
+        catch (Exception ex)
+        {
+            // The kind only: the script text holds the code.
+            Log.Write("pass", "filling a code failed (" + ex.GetType().Name + ")");
+            Bubble("Could not fill", "The page did not accept it.", TimeSpan.FromSeconds(4), ("OK", () => HideBubble()));
+            return;
+        }
+
+        try
+        {
+            tab.View.Focus(FocusState.Programmatic);
+        }
+        catch (Exception)
+        {
+        }
+
+        var said = answer.Trim('"') switch
+        {
+            "otp" or "otp+boxes" => "验证码已填入",
+            "none" => "请先点击验证码输入框。",
+            "origin" => "The page changed, so nothing was filled.",
+            _ => "Could not fill this page.",
+        };
+
+        Bubble(said, string.Empty, TimeSpan.FromSeconds(2.5));
+    }
+}
